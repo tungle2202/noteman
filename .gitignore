@@ -24,7 +24,7 @@ dist-ssr
 *.sw?
 
 # I just don't want to show it 
-./design/
+design/
 
 # Agents
-./AGENTS.md
+AGENTS.md
