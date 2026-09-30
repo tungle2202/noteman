@@ -96,12 +96,20 @@ pub struct FileIntegrityItem {
     pub file_size_bytes: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MigrationInfo {
+    pub version: i32,
+    pub name: String,
+    pub applied_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbStats {
     pub subjects_count: i64,
     pub threads_count: i64,
     pub files_count: i64,
     pub tasks_count: i64,
+    pub schema_version: i32,
     pub db_path: String,
     pub app_dir: String,
 }

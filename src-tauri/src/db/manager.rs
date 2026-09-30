@@ -35,6 +35,7 @@ impl DbManager {
         "cache/previews",
         "cache/latex_builds",
         "cache/exports",
+        "cache/trash",
         "config/templates/markdown",
         "config/templates/latex",
         "logs",
@@ -51,8 +52,11 @@ impl DbManager {
             std::fs::create_dir_all(app_dir.join(dir))?;
         }
 
-        let conn = Connection::open(&db_path)?;
-        initialize_schema(&conn)?;
+        // Startup sweep: clean up any stale staged files from previous abrupt crashes
+        Self::purge_trash_dir(&app_dir);
+
+        let mut conn = Connection::open(&db_path)?;
+        initialize_schema(&mut conn)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -68,8 +72,10 @@ impl DbManager {
             std::fs::create_dir_all(app_dir.join(dir))?;
         }
 
-        let conn = Connection::open_in_memory()?;
-        initialize_schema(&conn)?;
+        Self::purge_trash_dir(&app_dir);
+
+        let mut conn = Connection::open_in_memory()?;
+        initialize_schema(&mut conn)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -88,6 +94,135 @@ impl DbManager {
     pub fn resolve_storage_path(&self, relative_path: &str) -> PathBuf {
         let clean_path = relative_path.trim_start_matches(['/', '\\']);
         self.app_dir.join(clean_path)
+    }
+
+    /// Startup & maintenance sweeper: purges all files and subdirectories inside cache/trash.
+    pub fn purge_trash_dir(app_dir: &std::path::Path) {
+        let trash_dir = app_dir.join("cache/trash");
+        if trash_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&trash_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let _ = std::fs::remove_dir_all(path);
+                    } else {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Manually trigger a purge of the cache/trash staging directory.
+    pub fn purge_trash(&self) -> Result<(), DbError> {
+        Self::purge_trash_dir(&self.app_dir);
+        Ok(())
+    }
+
+    /// Two-phase staging helper: atomically moves files to cache/trash/{op_uuid}/.
+    /// Returns (trash_operation_dir, staged_moves_list) on success.
+    /// If any file move fails, already-staged files are rolled back to their original locations.
+    fn stage_files_to_trash(
+        &self,
+        op_uuid: &str,
+        relative_paths: &[String],
+    ) -> Result<(PathBuf, Vec<(PathBuf, PathBuf)>), DbError> {
+        let trash_dir = self.app_dir.join("cache/trash").join(op_uuid);
+        std::fs::create_dir_all(&trash_dir)?;
+
+        let mut staged_moves = Vec::new();
+
+        for rel_path in relative_paths {
+            let abs_src = self.resolve_storage_path(rel_path);
+            if abs_src.exists() {
+                let abs_dest = trash_dir.join(rel_path);
+                if let Some(parent) = abs_dest.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+
+                if let Err(err) = std::fs::rename(&abs_src, &abs_dest) {
+                    if err.kind() == std::io::ErrorKind::NotFound {
+                        // File was unlinked concurrently, treat as non-fatal
+                        continue;
+                    }
+
+                    // Staging failed: rollback all previously staged files
+                    Self::restore_staged_files(&staged_moves, &trash_dir);
+                    return Err(DbError::Io(err));
+                }
+
+                staged_moves.push((abs_src, abs_dest));
+            }
+        }
+
+        Ok((trash_dir, staged_moves))
+    }
+
+    /// Restores staged files back to their original source paths and deletes the trash op folder.
+    fn restore_staged_files(staged_moves: &[(PathBuf, PathBuf)], trash_dir: &std::path::Path) {
+        for (src, dest) in staged_moves.iter().rev() {
+            if dest.exists() {
+                if let Some(parent) = src.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::rename(dest, src);
+            }
+        }
+        let _ = std::fs::remove_dir_all(trash_dir);
+    }
+
+    /// Cleans up empty parent directories left behind after successful file removal.
+    fn clean_empty_parent_dirs(&self, staged_moves: &[(PathBuf, PathBuf)]) {
+        for (abs_src, _) in staged_moves {
+            if let Some(parent) = abs_src.parent() {
+                if parent.starts_with(&self.app_dir) && parent != self.app_dir {
+                    let is_empty = std::fs::read_dir(parent)
+                        .map(|mut it| it.next().is_none())
+                        .unwrap_or(false);
+                    if is_empty {
+                        let _ = std::fs::remove_dir(parent);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Cleans up thread-specific directories across all managed storage categories if empty.
+    fn clean_thread_managed_dirs(&self, thread_id: &str) {
+        let categories = [
+            "notes/markdown",
+            "notes/latex",
+            "notes/misc",
+            "materials/pdf",
+            "materials/slides",
+            "materials/docs",
+            "materials/archives",
+            "media/images",
+            "media/audio",
+        ];
+        for cat in categories {
+            let thread_dir = self.app_dir.join(cat).join(thread_id);
+            if thread_dir.exists() {
+                let is_empty = std::fs::read_dir(&thread_dir)
+                    .map(|mut it| it.next().is_none())
+                    .unwrap_or(false);
+                if is_empty {
+                    let _ = std::fs::remove_dir(&thread_dir);
+                }
+            }
+        }
+    }
+
+    /// Current SQLite schema version from PRAGMA user_version.
+    pub fn get_schema_version(&self) -> Result<i32, DbError> {
+        let conn = self.get_conn()?;
+        crate::db::migrations::get_schema_version(&conn)
+    }
+
+    /// Audit list of all applied migrations.
+    pub fn get_applied_migrations(&self) -> Result<Vec<crate::db::models::MigrationInfo>, DbError> {
+        let conn = self.get_conn()?;
+        crate::db::migrations::get_applied_migrations(&conn)
     }
 
     // =========================================================================
@@ -168,34 +303,69 @@ impl DbManager {
     }
 
     pub fn delete_subject(&self, id: &str, clean_files: bool) -> Result<(), DbError> {
-        if clean_files {
-            // Find all files belonging to all threads under this subject to clean them on disk
-            let paths: Vec<String> = {
-                let conn = self.get_conn()?;
-                let mut stmt = conn.prepare(
-                    "SELECT f.storage_path FROM files f 
-                     JOIN threads t ON f.thread_id = t.id 
-                     WHERE t.subject_id = ?1",
-                )?;
-                let rows = stmt
-                    .query_map(params![id], |row| row.get(0))?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                rows
-            };
+        let _ = self.get_subject(id)?;
 
-            for rel_path in paths {
-                let abs_path = self.resolve_storage_path(&rel_path);
-                let _ = std::fs::remove_file(abs_path);
+        if !clean_files {
+            let conn = self.get_conn()?;
+            let affected = conn.execute("DELETE FROM subjects WHERE id = ?1", params![id])?;
+            if affected == 0 {
+                return Err(DbError::NotFound(format!("Subject '{}' not found", id)));
+            }
+            return Ok(());
+        }
+
+        // 1. Query child file paths and thread IDs before SQL delete
+        let (paths, thread_ids): (Vec<String>, Vec<String>) = {
+            let conn = self.get_conn()?;
+            let mut stmt_files = conn.prepare(
+                "SELECT f.storage_path FROM files f 
+                 JOIN threads t ON f.thread_id = t.id 
+                 WHERE t.subject_id = ?1",
+            )?;
+            let paths = stmt_files
+                .query_map(params![id], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            let mut stmt_threads = conn.prepare("SELECT id FROM threads WHERE subject_id = ?1")?;
+            let thread_ids = stmt_threads
+                .query_map(params![id], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            (paths, thread_ids)
+        };
+
+        // 2. Stage files in cache/trash
+        let op_uuid = Uuid::new_v4().to_string();
+        let (trash_dir, staged) = self.stage_files_to_trash(&op_uuid, &paths)?;
+
+        // 3. Transactional DB deletion (cascades threads -> files, tasks)
+        let res = (|| -> Result<(), DbError> {
+            let mut conn = self.get_conn()?;
+            let tx = conn.transaction()?;
+            let affected = tx.execute("DELETE FROM subjects WHERE id = ?1", params![id])?;
+            if affected == 0 {
+                return Err(DbError::NotFound(format!("Subject '{}' not found", id)));
+            }
+            tx.commit()?;
+            Ok(())
+        })();
+
+        match res {
+            Ok(()) => {
+                let _ = std::fs::remove_dir_all(&trash_dir);
+                self.clean_empty_parent_dirs(&staged);
+                for thread_id in thread_ids {
+                    self.clean_thread_managed_dirs(&thread_id);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                Self::restore_staged_files(&staged, &trash_dir);
+                Err(e)
             }
         }
-
-        let conn = self.get_conn()?;
-        let affected = conn.execute("DELETE FROM subjects WHERE id = ?1", params![id])?;
-        if affected == 0 {
-            return Err(DbError::NotFound(format!("Subject '{}' not found", id)));
-        }
-        Ok(())
     }
 
     // =========================================================================
@@ -293,29 +463,56 @@ impl DbManager {
     }
 
     pub fn delete_thread(&self, id: &str, clean_files: bool) -> Result<(), DbError> {
-        if clean_files {
-            let paths: Vec<String> = {
-                let conn = self.get_conn()?;
-                let mut stmt = conn.prepare("SELECT storage_path FROM files WHERE thread_id = ?1")?;
-                let rows = stmt
-                    .query_map(params![id], |row| row.get(0))?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                rows
-            };
+        let _ = self.get_thread(id)?;
 
-            for rel_path in paths {
-                let abs_path = self.resolve_storage_path(&rel_path);
-                let _ = std::fs::remove_file(abs_path);
+        if !clean_files {
+            let conn = self.get_conn()?;
+            let affected = conn.execute("DELETE FROM threads WHERE id = ?1", params![id])?;
+            if affected == 0 {
+                return Err(DbError::NotFound(format!("Thread '{}' not found", id)));
+            }
+            return Ok(());
+        }
+
+        // 1. Query child file paths before SQL delete
+        let paths: Vec<String> = {
+            let conn = self.get_conn()?;
+            let mut stmt = conn.prepare("SELECT storage_path FROM files WHERE thread_id = ?1")?;
+            let rows = stmt
+                .query_map(params![id], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        // 2. Stage files in cache/trash
+        let op_uuid = Uuid::new_v4().to_string();
+        let (trash_dir, staged) = self.stage_files_to_trash(&op_uuid, &paths)?;
+
+        // 3. Transactional DB deletion (cascades files and tasks)
+        let res = (|| -> Result<(), DbError> {
+            let mut conn = self.get_conn()?;
+            let tx = conn.transaction()?;
+            let affected = tx.execute("DELETE FROM threads WHERE id = ?1", params![id])?;
+            if affected == 0 {
+                return Err(DbError::NotFound(format!("Thread '{}' not found", id)));
+            }
+            tx.commit()?;
+            Ok(())
+        })();
+
+        match res {
+            Ok(()) => {
+                let _ = std::fs::remove_dir_all(&trash_dir);
+                self.clean_empty_parent_dirs(&staged);
+                self.clean_thread_managed_dirs(id);
+                Ok(())
+            }
+            Err(e) => {
+                Self::restore_staged_files(&staged, &trash_dir);
+                Err(e)
             }
         }
-
-        let conn = self.get_conn()?;
-        let affected = conn.execute("DELETE FROM threads WHERE id = ?1", params![id])?;
-        if affected == 0 {
-            return Err(DbError::NotFound(format!("Thread '{}' not found", id)));
-        }
-        Ok(())
     }
 
     // =========================================================================
@@ -423,6 +620,56 @@ impl DbManager {
         }
     }
 
+    /// Fast zero-IPC-memory disk copy: imports an existing external file from the filesystem
+    /// (e.g. large PDFs, slides, archives) directly into Noteman's managed storage.
+    pub fn import_file(
+        &self,
+        thread_id: &str,
+        source_path: &str,
+        file_name: &str,
+        file_type: &str,
+        is_material: bool,
+    ) -> Result<FileRecord, DbError> {
+        // Verify thread exists
+        let _ = self.get_thread(thread_id)?;
+
+        let src = PathBuf::from(source_path);
+        if !src.is_file() {
+            return Err(DbError::NotFound(format!(
+                "Source file '{}' not found",
+                source_path
+            )));
+        }
+
+        let file_id = Uuid::new_v4().to_string();
+        let relative_path = Self::compute_storage_path(thread_id, &file_id, file_name, file_type, is_material);
+        let abs_dest = self.resolve_storage_path(&relative_path);
+
+        if let Some(parent) = abs_dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Fast zero-IPC disk copy
+        std::fs::copy(&src, &abs_dest)?;
+
+        let record_res = self.create_file_record(CreateFileInput {
+            id: Some(file_id),
+            thread_id: thread_id.to_string(),
+            file_name: file_name.to_string(),
+            file_type: file_type.to_string(),
+            storage_path: relative_path,
+            is_material,
+        });
+
+        match record_res {
+            Ok(record) => Ok(record),
+            Err(e) => {
+                let _ = std::fs::remove_file(abs_dest);
+                Err(e)
+            }
+        }
+    }
+
     pub fn read_file(&self, file_id: &str) -> Result<Vec<u8>, DbError> {
         let file_record = self.get_file(file_id)?;
         let abs_path = self.resolve_storage_path(&file_record.storage_path);
@@ -479,19 +726,42 @@ impl DbManager {
     }
 
     pub fn delete_file_record(&self, id: &str, remove_physical_file: bool) -> Result<(), DbError> {
-        if remove_physical_file {
-            if let Ok(file_record) = self.get_file(id) {
-                let abs_path = self.resolve_storage_path(&file_record.storage_path);
-                let _ = std::fs::remove_file(abs_path);
+        let file = self.get_file(id)?;
+
+        if !remove_physical_file {
+            let conn = self.get_conn()?;
+            let affected = conn.execute("DELETE FROM files WHERE id = ?1", params![id])?;
+            if affected == 0 {
+                return Err(DbError::NotFound(format!("File '{}' not found", id)));
             }
+            return Ok(());
         }
 
-        let conn = self.get_conn()?;
-        let affected = conn.execute("DELETE FROM files WHERE id = ?1", params![id])?;
-        if affected == 0 {
-            return Err(DbError::NotFound(format!("File '{}' not found", id)));
+        let op_uuid = Uuid::new_v4().to_string();
+        let (trash_dir, staged) = self.stage_files_to_trash(&op_uuid, &[file.storage_path])?;
+
+        let res = (|| -> Result<(), DbError> {
+            let mut conn = self.get_conn()?;
+            let tx = conn.transaction()?;
+            let affected = tx.execute("DELETE FROM files WHERE id = ?1", params![id])?;
+            if affected == 0 {
+                return Err(DbError::NotFound(format!("File '{}' not found", id)));
+            }
+            tx.commit()?;
+            Ok(())
+        })();
+
+        match res {
+            Ok(()) => {
+                let _ = std::fs::remove_dir_all(&trash_dir);
+                self.clean_empty_parent_dirs(&staged);
+                Ok(())
+            }
+            Err(e) => {
+                Self::restore_staged_files(&staged, &trash_dir);
+                Err(e)
+            }
         }
-        Ok(())
     }
 
     /// Package manager style integrity check: verifies every database file record
@@ -640,12 +910,15 @@ impl DbManager {
             conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
         let tasks_count: i64 =
             conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))?;
+        let schema_version: i32 =
+            crate::db::migrations::get_schema_version(&conn)?;
 
         Ok(DbStats {
             subjects_count,
             threads_count,
             files_count,
             tasks_count,
+            schema_version,
             db_path: self.db_path.to_string_lossy().to_string(),
             app_dir: self.app_dir.to_string_lossy().to_string(),
         })
@@ -714,20 +987,30 @@ mod tests {
             .expect("create task");
         assert_eq!(task.title, "Làm bài tập mạng 1");
 
-        // 6. Check Stats
+        // 6. Check Stats & Schema Version
         let stats = manager.get_stats().expect("stats");
         assert_eq!(stats.subjects_count, 1);
         assert_eq!(stats.threads_count, 1);
         assert_eq!(stats.files_count, 1);
         assert_eq!(stats.tasks_count, 1);
+        assert_eq!(stats.schema_version, 1);
 
-        // 7. Test Cascade Delete: deleting subject should delete thread, file, task
+        // 7. Test Cascade Delete with Two-Phase Staging: deleting subject should delete thread, file, task
         manager.delete_subject("IT3080", true).expect("delete subject");
         let stats_after = manager.get_stats().expect("stats after");
         assert_eq!(stats_after.subjects_count, 0);
         assert_eq!(stats_after.threads_count, 0);
         assert_eq!(stats_after.files_count, 0);
         assert_eq!(stats_after.tasks_count, 0);
+
+        // Verify trash staging directory was completely purged
+        let trash_dir = temp_dir.join("cache/trash");
+        let trash_empty = if trash_dir.exists() {
+            std::fs::read_dir(&trash_dir).map(|mut it| it.next().is_none()).unwrap_or(true)
+        } else {
+            true
+        };
+        assert!(trash_empty);
 
         // Cleanup temp dir
         let _ = std::fs::remove_dir_all(temp_dir);
@@ -867,5 +1150,141 @@ mod tests {
 
         let path_audio = DbManager::compute_storage_path("t1", "f8", "recording.mp3", ".mp3", true);
         assert_eq!(path_audio, "media/audio/t1/f8_recording.mp3");
+    }
+
+    #[test]
+    fn test_two_phase_file_deletion_and_missing_file_tolerance() {
+        let temp_dir = std::env::temp_dir().join(format!("noteman_test_del_{}", Uuid::new_v4()));
+        let manager = DbManager::new_in_memory(temp_dir.clone()).expect("init db");
+
+        manager
+            .create_subject(CreateSubjectInput {
+                id: "PHY101".to_string(),
+                name: "Physics I".to_string(),
+                semester: "20261".to_string(),
+            })
+            .expect("create subject");
+
+        let thread = manager
+            .create_thread(CreateThreadInput {
+                id: Some("thread-phy-1".to_string()),
+                subject_id: "PHY101".to_string(),
+                title: "Mechanics".to_string(),
+                description: None,
+                created_at: None,
+            })
+            .expect("create thread");
+
+        // 1. Normal file creation and two-phase deletion
+        let file1 = manager
+            .save_file(&thread.id, "lab1.md", ".md", false, b"# Lab 1")
+            .expect("save file 1");
+        let abs_path1 = manager.resolve_storage_path(&file1.storage_path);
+        assert!(abs_path1.exists());
+
+        manager.delete_file_record(&file1.id, true).expect("delete file 1");
+        assert!(!abs_path1.exists());
+        assert!(manager.get_file(&file1.id).is_err());
+
+        // 2. Missing file tolerance: delete physical file externally, then call delete_file_record
+        let file2 = manager
+            .save_file(&thread.id, "lab2.md", ".md", false, b"# Lab 2")
+            .expect("save file 2");
+        let abs_path2 = manager.resolve_storage_path(&file2.storage_path);
+        assert!(abs_path2.exists());
+
+        // Remove physically beforehand to simulate missing file
+        std::fs::remove_file(&abs_path2).expect("remove file manually");
+        assert!(!abs_path2.exists());
+
+        // Must succeed without error (NotFound is non-fatal)
+        manager.delete_file_record(&file2.id, true).expect("delete file with missing disk file");
+        assert!(manager.get_file(&file2.id).is_err());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_import_file_from_external_path() {
+        let temp_dir = std::env::temp_dir().join(format!("noteman_test_imp_{}", Uuid::new_v4()));
+        let manager = DbManager::new_in_memory(temp_dir.clone()).expect("init db");
+
+        manager
+            .create_subject(CreateSubjectInput {
+                id: "CS101".to_string(),
+                name: "CS Intro".to_string(),
+                semester: "20261".to_string(),
+            })
+            .expect("create subject");
+
+        let thread = manager
+            .create_thread(CreateThreadInput {
+                id: Some("thread-cs-1".to_string()),
+                subject_id: "CS101".to_string(),
+                title: "Intro".to_string(),
+                description: None,
+                created_at: None,
+            })
+            .expect("create thread");
+
+        // Create an external file (e.g. in /tmp or external directory)
+        let external_file = temp_dir.join("external_syllabus.pdf");
+        std::fs::write(&external_file, b"%PDF-1.4 sample syllabus content").expect("write external");
+
+        // Import the file directly via disk copy
+        let imported = manager
+            .import_file(
+                &thread.id,
+                external_file.to_str().unwrap(),
+                "syllabus.pdf",
+                ".pdf",
+                true,
+            )
+            .expect("import file");
+
+        assert_eq!(imported.file_name, "syllabus.pdf");
+        assert_eq!(imported.file_type, ".pdf");
+        assert!(imported.is_material);
+
+        let abs_imported = manager.resolve_storage_path(&imported.storage_path);
+        assert!(abs_imported.exists());
+        assert_eq!(
+            std::fs::read(&abs_imported).expect("read imported"),
+            b"%PDF-1.4 sample syllabus content"
+        );
+
+        // Original external file remains untouched
+        assert!(external_file.exists());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_migrations_and_trash_sweeper() {
+        let temp_dir = std::env::temp_dir().join(format!("noteman_test_mig_{}", Uuid::new_v4()));
+        let manager = DbManager::new_in_memory(temp_dir.clone()).expect("init db");
+
+        // Schema version check
+        let version = manager.get_schema_version().expect("get schema version");
+        assert_eq!(version, 1);
+
+        let applied = manager.get_applied_migrations().expect("get applied migrations");
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].version, 1);
+        assert_eq!(applied[0].name, "001_initial_schema");
+
+        // Test trash sweeper
+        let fake_stale_trash = temp_dir.join("cache/trash/stale-op-123");
+        std::fs::create_dir_all(&fake_stale_trash).expect("create fake trash");
+        std::fs::write(fake_stale_trash.join("orphan.txt"), b"stale").expect("write orphan");
+        assert!(fake_stale_trash.exists());
+
+        manager.purge_trash().expect("purge trash");
+        assert!(!fake_stale_trash.exists());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }

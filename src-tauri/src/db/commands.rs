@@ -2,8 +2,8 @@ use tauri::State;
 use crate::db::manager::DbManager;
 use crate::db::models::{
     CreateFileInput, CreateSubjectInput, CreateTaskInput, CreateThreadInput, DbStats,
-    FileIntegrityItem, FileRecord, Subject, Task, Thread, UpdateSubjectInput, UpdateTaskInput,
-    UpdateThreadInput,
+    FileIntegrityItem, FileRecord, MigrationInfo, Subject, Task, Thread, UpdateSubjectInput,
+    UpdateTaskInput, UpdateThreadInput,
 };
 
 #[tauri::command]
@@ -109,6 +109,16 @@ pub fn db_create_file_record(
     db.create_file_record(input).map_err(|e| e.to_string())
 }
 
+/// USE CASE: In-Memory Content Authoring & Editing
+/// -----------------------------------------------
+/// Use this command when saving user-authored notes created or edited inside the embedded
+/// Markdown (.md) or LaTeX (.tex) editors. The payload data resides in frontend memory/state
+/// and is transmitted as a byte buffer (`Vec<u8>`).
+///
+/// WHEN NOT TO USE:
+/// Do NOT use this command to import external files from the user's filesystem (such as large
+/// lecture PDFs, slide decks, or ZIP archives). Sending large byte arrays across Tauri's JSON-based
+/// IPC creates unnecessary memory duplication and serialization latency. Use `db_import_file` instead.
 #[tauri::command]
 pub fn db_save_file(
     db: State<'_, DbManager>,
@@ -119,6 +129,29 @@ pub fn db_save_file(
     data: Vec<u8>,
 ) -> Result<FileRecord, String> {
     db.save_file(&thread_id, &file_name, &file_type, is_material, &data)
+        .map_err(|e| e.to_string())
+}
+
+/// USE CASE: External File Importing (Zero-IPC-Memory Overhead)
+/// ------------------------------------------------------------
+/// Use this command when importing external course materials or documents selected via native file
+/// dialog (`@tauri-apps/plugin-dialog`) or desktop drag-and-drop (e.g. .pdf textbooks, .pptx slides,
+/// .zip archives, .docx specs). The frontend transmits ONLY the local `source_path` string.
+/// Rust directly executes a fast, zero-IPC-memory disk copy (`std::fs::copy`) into Noteman's managed storage.
+///
+/// WHEN NOT TO USE:
+/// Do NOT use this command for note content authored in memory inside the webview that does not
+/// already exist as a file on the local filesystem. Use `db_save_file` for in-memory editor buffers.
+#[tauri::command]
+pub fn db_import_file(
+    db: State<'_, DbManager>,
+    thread_id: String,
+    source_path: String,
+    file_name: String,
+    file_type: String,
+    is_material: bool,
+) -> Result<FileRecord, String> {
+    db.import_file(&thread_id, &source_path, &file_name, &file_type, is_material)
         .map_err(|e| e.to_string())
 }
 
@@ -192,4 +225,25 @@ pub fn db_update_task(
 #[tauri::command]
 pub fn db_delete_task(db: State<'_, DbManager>, id: String) -> Result<(), String> {
     db.delete_task(&id).map_err(|e| e.to_string())
+}
+
+// =========================================================================
+// MIGRATIONS & SYSTEM MAINTENANCE
+// =========================================================================
+
+#[tauri::command]
+pub fn db_get_schema_version(db: State<'_, DbManager>) -> Result<i32, String> {
+    db.get_schema_version().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn db_get_applied_migrations(
+    db: State<'_, DbManager>,
+) -> Result<Vec<MigrationInfo>, String> {
+    db.get_applied_migrations().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn db_purge_trash(db: State<'_, DbManager>) -> Result<(), String> {
+    db.purge_trash().map_err(|e| e.to_string())
 }
