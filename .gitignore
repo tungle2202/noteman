@@ -25,6 +25,7 @@ dist-ssr
 
 # I just don't want to show it 
 design/
+FE_Problems_List.md
 
 # Agents
 AGENTS.md
