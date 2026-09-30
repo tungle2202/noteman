@@ -44,6 +44,7 @@ pub fn run() {
             db::db_delete_thread,
             db::db_create_file_record,
             db::db_save_file,
+            db::db_import_file,
             db::db_read_file,
             db::db_get_files_by_thread,
             db::db_get_file,
@@ -54,6 +55,9 @@ pub fn run() {
             db::db_get_task,
             db::db_update_task,
             db::db_delete_task,
+            db::db_get_schema_version,
+            db::db_get_applied_migrations,
+            db::db_purge_trash,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
