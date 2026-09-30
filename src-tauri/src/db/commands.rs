@@ -156,6 +156,16 @@ pub fn db_import_file(
 }
 
 #[tauri::command]
+pub fn db_rename_file(
+    db: State<'_, DbManager>,
+    file_id: String,
+    new_name: String,
+) -> Result<FileRecord, String> {
+    db.rename_file(&file_id, &new_name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn db_read_file(db: State<'_, DbManager>, file_id: String) -> Result<Vec<u8>, String> {
     db.read_file(&file_id).map_err(|e| e.to_string())
 }

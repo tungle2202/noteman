@@ -45,6 +45,7 @@ pub fn run() {
             db::db_create_file_record,
             db::db_save_file,
             db::db_import_file,
+            db::db_rename_file,
             db::db_read_file,
             db::db_get_files_by_thread,
             db::db_get_file,

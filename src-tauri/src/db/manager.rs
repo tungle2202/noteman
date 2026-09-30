@@ -677,6 +677,183 @@ impl DbManager {
         Ok(bytes)
     }
 
+    /// Atomically renames a file on disk and updates its file_name and storage_path in SQLite.
+    ///
+    /// - Strictly recomputes storage_path according to production routing matrix rules.
+    /// - If the new_name does not supply an extension, preserves the existing file extension.
+    /// - Verifies that the source physical file exists on disk.
+    /// - Prevents overwriting distinct files on disk.
+    /// - Transactional: if physical rename fails, DB is not modified; if DB update/commit fails,
+    ///   the physical file rename is reverted back to the original path.
+    /// - Cleans up empty parent directories if the file moved across categories.
+    pub fn rename_file(&self, file_id: &str, new_name: &str) -> Result<FileRecord, DbError> {
+        let clean_name = new_name.trim();
+        let clean_name = clean_name
+            .strip_prefix(&format!("{}_", file_id))
+            .unwrap_or(clean_name);
+
+        if clean_name.is_empty() {
+            return Err(DbError::Validation("File name cannot be empty".to_string()));
+        }
+
+        if clean_name.contains('/')
+            || clean_name.contains('\\')
+            || clean_name.contains('\0')
+            || clean_name == "."
+            || clean_name == ".."
+        {
+            return Err(DbError::Validation(
+                "File name contains invalid characters or path separators".to_string(),
+            ));
+        }
+
+        let mut conn = self.get_conn()?;
+
+        // Retrieve existing file record
+        let current_file: FileRecord = {
+            let mut stmt = conn.prepare(
+                "SELECT id, thread_id, file_name, file_type, storage_path, is_material 
+                 FROM files WHERE id = ?1",
+            )?;
+            let file = stmt
+                .query_row(params![file_id], |row| {
+                    let is_material_int: i32 = row.get(5)?;
+                    Ok(FileRecord {
+                        id: row.get(0)?,
+                        thread_id: row.get(1)?,
+                        file_name: row.get(2)?,
+                        file_type: row.get(3)?,
+                        storage_path: row.get(4)?,
+                        is_material: is_material_int == 1,
+                    })
+                })
+                .optional()?;
+
+            file.ok_or_else(|| DbError::NotFound(format!("File '{}' not found", file_id)))?
+        };
+
+        // Determine effective file_name and file_type
+        let (effective_name, effective_type) = if !current_file.file_type.is_empty()
+            && clean_name
+                .to_lowercase()
+                .ends_with(&current_file.file_type.to_lowercase())
+        {
+            (clean_name.to_string(), current_file.file_type.clone())
+        } else {
+            match std::path::Path::new(clean_name)
+                .extension()
+                .and_then(|e| e.to_str())
+            {
+                Some(ext) => (clean_name.to_string(), format!(".{}", ext)),
+                None => {
+                    if !current_file.file_type.is_empty() {
+                        let ext = if current_file.file_type.starts_with('.') {
+                            current_file.file_type.clone()
+                        } else {
+                            format!(".{}", current_file.file_type)
+                        };
+                        (format!("{}{}", clean_name, ext), ext)
+                    } else {
+                        (clean_name.to_string(), current_file.file_type.clone())
+                    }
+                }
+            }
+        };
+
+        let old_abs_path = self.resolve_storage_path(&current_file.storage_path);
+        let new_storage_path = Self::compute_storage_path(
+            &current_file.thread_id,
+            &current_file.id,
+            &effective_name,
+            &effective_type,
+            current_file.is_material,
+        );
+        let new_abs_path = self.resolve_storage_path(&new_storage_path);
+
+        // Check if nothing changed
+        if current_file.file_name == effective_name && current_file.storage_path == new_storage_path {
+            if !old_abs_path.exists() {
+                return Err(DbError::NotFound(format!(
+                    "Physical file not found on disk at '{}'",
+                    current_file.storage_path
+                )));
+            }
+            return Ok(current_file);
+        }
+
+        // Source file must exist on disk
+        if !old_abs_path.exists() {
+            return Err(DbError::NotFound(format!(
+                "Physical file not found on disk at '{}'",
+                current_file.storage_path
+            )));
+        }
+
+        // Avoid overwriting a different file
+        if new_abs_path.exists() && new_abs_path != old_abs_path {
+            return Err(DbError::Validation(format!(
+                "Target file already exists on disk: '{}'",
+                new_storage_path
+            )));
+        }
+
+        if let Some(parent) = new_abs_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // 1. Rename on disk
+        std::fs::rename(&old_abs_path, &new_abs_path)?;
+
+        // 2. Transactional DB update
+        let tx_result = (|| -> Result<(), DbError> {
+            let tx = conn.transaction()?;
+            let affected = tx.execute(
+                "UPDATE files SET file_name = ?1, file_type = ?2, storage_path = ?3 WHERE id = ?4",
+                params![effective_name, effective_type, new_storage_path, file_id],
+            )?;
+            if affected == 0 {
+                return Err(DbError::NotFound(format!("File '{}' not found", file_id)));
+            }
+            tx.commit()?;
+            Ok(())
+        })();
+
+        match tx_result {
+            Ok(()) => {
+                // If old directory is empty and different from new directory, clean it up
+                if let Some(old_parent) = old_abs_path.parent() {
+                    if let Some(new_parent) = new_abs_path.parent() {
+                        if old_parent != new_parent
+                            && old_parent.starts_with(&self.app_dir)
+                            && old_parent != self.app_dir
+                        {
+                            let is_empty = std::fs::read_dir(old_parent)
+                                .map(|mut it| it.next().is_none())
+                                .unwrap_or(false);
+                            if is_empty {
+                                let _ = std::fs::remove_dir(old_parent);
+                            }
+                        }
+                    }
+                }
+
+                Ok(FileRecord {
+                    id: current_file.id,
+                    thread_id: current_file.thread_id,
+                    file_name: effective_name,
+                    file_type: effective_type,
+                    storage_path: new_storage_path,
+                    is_material: current_file.is_material,
+                })
+            }
+            Err(e) => {
+                // Atomic rollback on failure: move physical file back to old location
+                let _ = std::fs::rename(&new_abs_path, &old_abs_path);
+                Err(e)
+            }
+        }
+    }
+
     pub fn get_files_by_thread(&self, thread_id: &str) -> Result<Vec<FileRecord>, DbError> {
         let conn = self.get_conn()?;
         let mut stmt = conn.prepare(
@@ -1283,6 +1460,216 @@ mod tests {
 
         manager.purge_trash().expect("purge trash");
         assert!(!fake_stale_trash.exists());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_rename_file_basic_and_omitted_extension() {
+        let temp_dir = std::env::temp_dir().join(format!("noteman_test_rn_{}", Uuid::new_v4()));
+        let manager = DbManager::new_in_memory(temp_dir.clone()).expect("init db");
+
+        manager
+            .create_subject(CreateSubjectInput {
+                id: "CS201".to_string(),
+                name: "Data Structures".to_string(),
+                semester: "20261".to_string(),
+            })
+            .expect("create subject");
+
+        let thread = manager
+            .create_thread(CreateThreadInput {
+                id: Some("thread-rn-1".to_string()),
+                subject_id: "CS201".to_string(),
+                title: "Trees".to_string(),
+                description: None,
+                created_at: None,
+            })
+            .expect("create thread");
+
+        let sample_content = b"# Binary Search Trees\nRoot, left, right.";
+        let file = manager
+            .save_file(&thread.id, "trees.md", ".md", false, sample_content)
+            .expect("save file");
+
+        let old_abs_path = manager.resolve_storage_path(&file.storage_path);
+        assert!(old_abs_path.exists());
+
+        // 1. Basic rename with explicit extension
+        let renamed = manager
+            .rename_file(&file.id, "bst_notes.md")
+            .expect("rename with extension");
+
+        assert_eq!(renamed.id, file.id);
+        assert_eq!(renamed.file_name, "bst_notes.md");
+        assert_eq!(renamed.file_type, ".md");
+        assert_eq!(
+            renamed.storage_path,
+            format!("notes/markdown/{}/{}_bst_notes.md", thread.id, file.id)
+        );
+
+        // Old file must no longer exist, new file must exist with same content
+        assert!(!old_abs_path.exists());
+        let new_abs_path = manager.resolve_storage_path(&renamed.storage_path);
+        assert!(new_abs_path.exists());
+        assert_eq!(
+            std::fs::read(&new_abs_path).expect("read new file"),
+            sample_content
+        );
+
+        // Verify SQLite database was updated
+        let fetched = manager.get_file(&file.id).expect("get file from db");
+        assert_eq!(fetched.file_name, "bst_notes.md");
+        assert_eq!(fetched.storage_path, renamed.storage_path);
+
+        // 2. Rename without extension (should preserve existing .md extension)
+        let renamed_no_ext = manager
+            .rename_file(&file.id, "bst_final")
+            .expect("rename without extension");
+
+        assert_eq!(renamed_no_ext.file_name, "bst_final.md");
+        assert_eq!(renamed_no_ext.file_type, ".md");
+        assert!(!new_abs_path.exists());
+        let final_abs_path = manager.resolve_storage_path(&renamed_no_ext.storage_path);
+        assert!(final_abs_path.exists());
+
+        // 3. Rename to same name is a no-op
+        let same = manager
+            .rename_file(&file.id, "bst_final.md")
+            .expect("rename to same name");
+        assert_eq!(same.file_name, "bst_final.md");
+        assert!(final_abs_path.exists());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_rename_file_type_change_and_routing() {
+        let temp_dir = std::env::temp_dir().join(format!("noteman_test_rn_cat_{}", Uuid::new_v4()));
+        let manager = DbManager::new_in_memory(temp_dir.clone()).expect("init db");
+
+        manager
+            .create_subject(CreateSubjectInput {
+                id: "CS202".to_string(),
+                name: "Algorithms".to_string(),
+                semester: "20261".to_string(),
+            })
+            .expect("create subject");
+
+        let thread = manager
+            .create_thread(CreateThreadInput {
+                id: Some("thread-rn-2".to_string()),
+                subject_id: "CS202".to_string(),
+                title: "Sorting".to_string(),
+                description: None,
+                created_at: None,
+            })
+            .expect("create thread");
+
+        // Save a misc text note
+        let file = manager
+            .save_file(&thread.id, "sorting.txt", ".txt", false, b"quicksort")
+            .expect("save misc file");
+        assert!(file.storage_path.starts_with("notes/misc/"));
+        let old_abs = manager.resolve_storage_path(&file.storage_path);
+        assert!(old_abs.exists());
+
+        // Rename from .txt to .md (should move to notes/markdown/)
+        let renamed = manager
+            .rename_file(&file.id, "sorting.md")
+            .expect("rename to markdown");
+        assert_eq!(renamed.file_name, "sorting.md");
+        assert_eq!(renamed.file_type, ".md");
+        assert!(renamed.storage_path.starts_with("notes/markdown/"));
+
+        assert!(!old_abs.exists());
+        let new_abs = manager.resolve_storage_path(&renamed.storage_path);
+        assert!(new_abs.exists());
+        assert_eq!(std::fs::read(new_abs).expect("read"), b"quicksort");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_rename_file_validation_and_safety_checks() {
+        let temp_dir = std::env::temp_dir().join(format!("noteman_test_rn_err_{}", Uuid::new_v4()));
+        let manager = DbManager::new_in_memory(temp_dir.clone()).expect("init db");
+
+        manager
+            .create_subject(CreateSubjectInput {
+                id: "CS203".to_string(),
+                name: "OS".to_string(),
+                semester: "20261".to_string(),
+            })
+            .expect("create subject");
+
+        let thread = manager
+            .create_thread(CreateThreadInput {
+                id: Some("thread-rn-3".to_string()),
+                subject_id: "CS203".to_string(),
+                title: "Processes".to_string(),
+                description: None,
+                created_at: None,
+            })
+            .expect("create thread");
+
+        let file = manager
+            .save_file(&thread.id, "process.md", ".md", false, b"# Processes")
+            .expect("save file");
+
+        // 1. Nonexistent file ID
+        let err_not_found = manager.rename_file("non-existent-id", "test.md");
+        assert!(matches!(err_not_found, Err(DbError::NotFound(_))));
+
+        // 2. Empty file name
+        let err_empty = manager.rename_file(&file.id, "   ");
+        assert!(matches!(err_empty, Err(DbError::Validation(_))));
+
+        // 3. Invalid characters or path traversal
+        assert!(matches!(
+            manager.rename_file(&file.id, "../escape.md"),
+            Err(DbError::Validation(_))
+        ));
+        assert!(matches!(
+            manager.rename_file(&file.id, "sub/dir.md"),
+            Err(DbError::Validation(_))
+        ));
+        assert!(matches!(
+            manager.rename_file(&file.id, "sub\\dir.md"),
+            Err(DbError::Validation(_))
+        ));
+        assert!(matches!(
+            manager.rename_file(&file.id, "."),
+            Err(DbError::Validation(_))
+        ));
+        assert!(matches!(
+            manager.rename_file(&file.id, ".."),
+            Err(DbError::Validation(_))
+        ));
+
+        // 4. Target already exists on disk
+        let target_path = DbManager::compute_storage_path(&thread.id, &file.id, "existing.md", ".md", false);
+        let abs_target = manager.resolve_storage_path(&target_path);
+        if let Some(p) = abs_target.parent() {
+            std::fs::create_dir_all(p).unwrap();
+        }
+        std::fs::write(&abs_target, b"occupied").unwrap();
+
+        let err_collision = manager.rename_file(&file.id, "existing.md");
+        assert!(matches!(err_collision, Err(DbError::Validation(_))));
+
+        // 5. Missing source file on disk
+        let file_missing = manager
+            .save_file(&thread.id, "ghost.md", ".md", false, b"ghost")
+            .expect("save file");
+        let abs_ghost = manager.resolve_storage_path(&file_missing.storage_path);
+        std::fs::remove_file(abs_ghost).expect("delete ghost");
+
+        let err_missing = manager.rename_file(&file_missing.id, "revived.md");
+        assert!(matches!(err_missing, Err(DbError::NotFound(_))));
 
         // Cleanup
         let _ = std::fs::remove_dir_all(temp_dir);
