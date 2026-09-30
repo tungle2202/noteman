@@ -1,0 +1,219 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Noteman Database Design",
+  "description": "Relational SQLite database schema for Noteman local-first note management.",
+  "database": {
+    "filename": "noteman.db",
+    "engine": "SQLite 3",
+    "pragmas": {
+      "foreign_keys": "ON",
+      "journal_mode": "WAL",
+      "synchronous": "NORMAL"
+    }
+  },
+  "tables": {
+    "subjects": {
+      "name": "subjects",
+      "description": "Academic subjects or courses enrolled by the user.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT",
+          "primary_key": true,
+          "nullable": false,
+          "description": "Unique subject identifier / course code.",
+          "example": "IT3080"
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Human-readable subject name.",
+          "example": "Mạng máy tính"
+        },
+        {
+          "name": "semester",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Academic semester code.",
+          "example": "20261"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "threads": {
+      "name": "threads",
+      "description": "Study threads or lesson topics under a specific subject.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT",
+          "primary_key": true,
+          "nullable": false,
+          "description": "Unique thread identifier (UUID v4 or custom string)."
+        },
+        {
+          "name": "subject_id",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Foreign key referencing subjects(id)."
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Thread or lesson topic title.",
+          "example": "Buổi 2: Rust và Tauri"
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": true,
+          "description": "Short summary or description about the lesson covered in this thread."
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "ISO 8601 timestamp string representing when the thread was created."
+        }
+      ],
+      "foreign_keys": [
+        {
+          "column": "subject_id",
+          "references_table": "subjects",
+          "references_column": "id",
+          "on_delete": "CASCADE"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_threads_subject_id",
+          "columns": ["subject_id"]
+        }
+      ]
+    },
+    "files": {
+      "name": "files",
+      "description": "Metadata for files managed by Noteman (user notes and imported materials).",
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT",
+          "primary_key": true,
+          "nullable": false,
+          "description": "Unique file identifier (UUID v4)."
+        },
+        {
+          "name": "thread_id",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Foreign key referencing threads(id)."
+        },
+        {
+          "name": "file_name",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Original file name with extension.",
+          "example": "buoi2_notes.md"
+        },
+        {
+          "name": "file_type",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "File extension or type category.",
+          "example": ".md, .tex, .pdf"
+        },
+        {
+          "name": "storage_path",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Relative directory path where the file is physically stored inside the application directory.",
+          "example": "notes/markdown/thread_123/buoi2_notes.md"
+        },
+        {
+          "name": "is_material",
+          "type": "INTEGER",
+          "primary_key": false,
+          "nullable": false,
+          "default": 0,
+          "check": "is_material IN (0, 1)",
+          "description": "Boolean flag: 1 if the file is imported course material, 0 if it is a user note/document."
+        }
+      ],
+      "foreign_keys": [
+        {
+          "column": "thread_id",
+          "references_table": "threads",
+          "references_column": "id",
+          "on_delete": "CASCADE"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_files_thread_id",
+          "columns": ["thread_id"]
+        }
+      ]
+    },
+    "tasks": {
+      "name": "tasks",
+      "description": "Actionable tasks and homework deadlines linked to study threads.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT",
+          "primary_key": true,
+          "nullable": false,
+          "description": "Unique task identifier (UUID v4)."
+        },
+        {
+          "name": "thread_id",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Foreign key referencing threads(id)."
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Title or summary of the task."
+        },
+        {
+          "name": "deadline",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": true,
+          "description": "Target completion timestamp (ISO 8601 string or date format)."
+        }
+      ],
+      "foreign_keys": [
+        {
+          "column": "thread_id",
+          "references_table": "threads",
+          "references_column": "id",
+          "on_delete": "CASCADE"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_tasks_thread_id",
+          "columns": ["thread_id"]
+        }
+      ]
+    }
+  }
+}

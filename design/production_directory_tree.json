@@ -1,0 +1,208 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Noteman Production Directory Tree & Storage Architecture",
+  "description": "Defines the production filesystem hierarchy and file placement rules inspired by Linux Package Managers (FHS / XDG). Specific file types and roles are strictly partitioned into dedicated directories to maintain referential integrity and prevent orphaned assets.",
+  "root_base_directory": {
+    "linux": "~/.local/share/com.tungle2202.noteman/",
+    "windows": "%LOCALAPPDATA%\\com.tungle2202.noteman\\",
+    "macos": "~/Library/Application Support/com.tungle2202.noteman/",
+    "env_variable": "XDG_DATA_HOME/com.tungle2202.noteman/"
+  },
+  "directory_tree": {
+    "db/": {
+      "purpose": "State and relational metadata storage (analogous to /var/lib in Linux).",
+      "lifecycle": "Persistent, critical",
+      "allowed_extensions": [".db", ".db-wal", ".db-shm"],
+      "contents": {
+        "noteman.db": "Active SQLite database storing subjects, threads, files, tasks, and indexes.",
+        "noteman.db-wal": "SQLite write-ahead log for high concurrency and atomic commits.",
+        "noteman.db-shm": "SQLite shared memory index for WAL.",
+        "backups/": {
+          "purpose": "Automatic and manual database snapshots / backups.",
+          "naming_convention": "noteman_backup_{YYYYMMDD_HHMMSS}.db",
+          "allowed_extensions": [".db"]
+        }
+      }
+    },
+    "notes/": {
+      "purpose": "User-authored notes and source documents created via embedded editors (is_material = 0).",
+      "lifecycle": "Persistent, user primary content",
+      "subdirectories": {
+        "markdown/": {
+          "purpose": "Dedicated storage for Markdown notes and outlines.",
+          "allowed_extensions": [".md", ".markdown"],
+          "path_pattern": "notes/markdown/{thread_id}/{file_id}_{file_name}",
+          "example": "notes/markdown/8fa9b3c4-1234/buoi2_rust_basics.md"
+        },
+        "latex/": {
+          "purpose": "Dedicated storage for LaTeX source files, math documents, and bibliography files.",
+          "allowed_extensions": [".tex", ".bib", ".sty", ".cls"],
+          "path_pattern": "notes/latex/{thread_id}/{file_id}_{file_name}",
+          "example": "notes/latex/8fa9b3c4-1234/calculus_assignment.tex"
+        },
+        "misc/": {
+          "purpose": "Plain text notes, snippets, or code snippets authored by the user.",
+          "allowed_extensions": [".txt", ".rs", ".py", ".cpp", ".c", ".js"],
+          "path_pattern": "notes/misc/{thread_id}/{file_id}_{file_name}",
+          "example": "notes/misc/8fa9b3c4-1234/snippet.rs"
+        }
+      }
+    },
+    "materials/": {
+      "purpose": "Imported academic course materials, external documents, and references (is_material = 1).",
+      "lifecycle": "Persistent, imported resources",
+      "subdirectories": {
+        "pdf/": {
+          "purpose": "Course textbooks, lecture slide PDFs, syllabus, and examination papers.",
+          "allowed_extensions": [".pdf"],
+          "path_pattern": "materials/pdf/{thread_id}/{file_id}_{file_name}",
+          "example": "materials/pdf/8fa9b3c4-1234/chuong1_tong_quan.pdf"
+        },
+        "slides/": {
+          "purpose": "Presentation slide files.",
+          "allowed_extensions": [".pptx", ".ppt", ".odp", ".key"],
+          "path_pattern": "materials/slides/{thread_id}/{file_id}_{file_name}",
+          "example": "materials/slides/8fa9b3c4-1234/presentation_networking.pptx"
+        },
+        "docs/": {
+          "purpose": "External office documents and reference specifications.",
+          "allowed_extensions": [".docx", ".doc", ".odt", ".rtf"],
+          "path_pattern": "materials/docs/{thread_id}/{file_id}_{file_name}",
+          "example": "materials/docs/8fa9b3c4-1234/de_cuong_mon_hoc.docx"
+        },
+        "archives/": {
+          "purpose": "Compressed code packages, dataset archives, and lab source archives.",
+          "allowed_extensions": [".zip", ".tar.gz", ".tar.xz", ".7z", ".rar"],
+          "path_pattern": "materials/archives/{thread_id}/{file_id}_{file_name}",
+          "example": "materials/archives/8fa9b3c4-1234/lab1_starter_code.zip"
+        }
+      }
+    },
+    "media/": {
+      "purpose": "Embedded multimedia assets referenced within notes (images, graphs, audio).",
+      "lifecycle": "Persistent, linked assets",
+      "subdirectories": {
+        "images/": {
+          "purpose": "Diagrams, screenshots, whiteboard captures, and figures embedded in Markdown or LaTeX.",
+          "allowed_extensions": [".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"],
+          "path_pattern": "media/images/{thread_id}/{file_id}_{file_name}",
+          "example": "media/images/8fa9b3c4-1234/osi_7_layers_diagram.png"
+        },
+        "audio/": {
+          "purpose": "Lecture voice recordings or audio explanations.",
+          "allowed_extensions": [".mp3", ".wav", ".m4a", ".ogg", ".aac"],
+          "path_pattern": "media/audio/{thread_id}/{file_id}_{file_name}",
+          "example": "media/audio/8fa9b3c4-1234/lecture_recording_part1.mp3"
+        }
+      }
+    },
+    "cache/": {
+      "purpose": "Ephemeral build artifacts, math formula rendering cache, and staged exports (analogous to /var/cache).",
+      "lifecycle": "Ephemeral, purgeable without loss of persistent data",
+      "subdirectories": {
+        "katex/": {
+          "purpose": "Cached rendered KaTeX math expressions / SVG glyph cache for fast editor previews.",
+          "allowed_extensions": [".svg", ".json", ".cache"]
+        },
+        "previews/": {
+          "purpose": "Generated thumbnail previews and rendered page representations of PDFs and LaTeX docs.",
+          "allowed_extensions": [".png", ".webp"]
+        },
+        "latex_builds/": {
+          "purpose": "Intermediate compilation artifacts (.aux, .log, .out, .toc, .synctex) produced by tectonic/pdflatex engines.",
+          "allowed_extensions": [".aux", ".log", ".out", ".toc", ".synctex.gz"]
+        },
+        "exports/": {
+          "purpose": "Staged exports (HTML / PDF) generated on demand before the user saves them to an external location.",
+          "allowed_extensions": [".pdf", ".html"]
+        }
+      }
+    },
+    "config/": {
+      "purpose": "User configurations, editor presets, and customizable templates (analogous to /etc).",
+      "lifecycle": "Persistent configuration",
+      "subdirectories": {
+        "settings.json": "App preferences (theme, font, KaTeX macros, auto-save interval, default semester).",
+        "templates/markdown/": {
+          "purpose": "Starter Markdown templates for lectures, lab reports, and revision summaries.",
+          "allowed_extensions": [".md"]
+        },
+        "templates/latex/": {
+          "purpose": "Starter LaTeX templates for homework submissions, research papers, and cheat sheets.",
+          "allowed_extensions": [".tex"]
+        }
+      }
+    },
+    "logs/": {
+      "purpose": "Diagnostics, runtime logs, crash traces, and database migration audit logs (analogous to /var/log).",
+      "lifecycle": "Rotated, transient",
+      "contents": {
+        "noteman.log": "Primary application log file.",
+        "integrity.log": "Audit trail of database-to-filesystem verification runs."
+      }
+    }
+  },
+  "package_manager_principles": {
+    "strict_type_routing": "Every file imported or authored must be routed to its strictly assigned subdirectory according to its file_type and is_material flag.",
+    "routing_matrix": [
+      {
+        "category": "Notes - Markdown",
+        "file_type": [".md", ".markdown"],
+        "is_material": false,
+        "target_directory": "notes/markdown/{thread_id}/"
+      },
+      {
+        "category": "Notes - LaTeX",
+        "file_type": [".tex", ".bib", ".sty", ".cls"],
+        "is_material": false,
+        "target_directory": "notes/latex/{thread_id}/"
+      },
+      {
+        "category": "Notes - Misc Text/Code",
+        "file_type": [".txt", ".rs", ".py", ".cpp", ".c", ".js"],
+        "is_material": false,
+        "target_directory": "notes/misc/{thread_id}/"
+      },
+      {
+        "category": "Materials - PDF",
+        "file_type": [".pdf"],
+        "is_material": true,
+        "target_directory": "materials/pdf/{thread_id}/"
+      },
+      {
+        "category": "Materials - Slides",
+        "file_type": [".pptx", ".ppt", ".odp", ".key"],
+        "is_material": true,
+        "target_directory": "materials/slides/{thread_id}/"
+      },
+      {
+        "category": "Materials - Documents",
+        "file_type": [".docx", ".doc", ".odt", ".rtf"],
+        "is_material": true,
+        "target_directory": "materials/docs/{thread_id}/"
+      },
+      {
+        "category": "Materials - Archives",
+        "file_type": [".zip", ".tar.gz", ".tar.xz", ".7z", ".rar"],
+        "is_material": true,
+        "target_directory": "materials/archives/{thread_id}/"
+      },
+      {
+        "category": "Media - Images",
+        "file_type": [".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"],
+        "is_material": "any",
+        "target_directory": "media/images/{thread_id}/"
+      },
+      {
+        "category": "Media - Audio",
+        "file_type": [".mp3", ".wav", ".m4a", ".ogg", ".aac"],
+        "is_material": "any",
+        "target_directory": "media/audio/{thread_id}/"
+      }
+    ],
+    "atomic_file_ops": "Writing the file payload to disk and inserting its metadata into SQLite must be coordinated. If disk write fails, no DB record is created; if DB insert fails, the uncommitted file is cleaned up.",
+    "clean_uninstallation": "Deleting a file, thread, or subject removes both SQLite records and physical files on disk to prevent orphaned files.",
+    "integrity_verification": "The system includes an integrity verification command (verify_files_integrity) like 'pacman -Qk' to check that each database record corresponds to a verified file on disk.",
+    "safe_cache_purge": "The entire cache/ directory can be purged at any time without compromising database consistency or user documents."
+  }
+}
