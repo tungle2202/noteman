@@ -1,0 +1,58 @@
+{
+  "nav": { "home": "Home", "worktree": "Worktree", "user": "Account" },
+  "home": {
+    "title": "Class Schedule",
+    "today": "Today",
+    "semester": "Semester",
+    "searchPlaceholder": "Enter course code, class code, or name",
+    "view": { "detail": "Details", "calendar": "Calendar" },
+    "table": { "index": "No.", "code": "Course code", "name": "Course name", "schedule": "Schedule" },
+    "scheduleLine": "{{weekday}}: Periods {{periods}} ({{time}}) - {{room}}",
+    "empty": "No courses found.",
+    "prevMonth": "Previous month",
+    "nextMonth": "Next month"
+  },
+  "weekday": { "2": "Mon", "3": "Tue", "4": "Wed", "5": "Thu", "6": "Fri", "7": "Sat", "8": "Sun" },
+  "worktree": {
+    "title": "Worktree",
+    "searchPlaceholder": "Search...",
+    "works": "@{{user}}'s Works",
+    "pinned": "Pinned Workspaces",
+    "recent": "Recent Workspaces",
+    "emptyPinned": "Nothing pinned yet. Pin a subject to find it quickly.",
+    "emptyRecent": "Visit a subject and it will show up here.",
+    "pin": "Pin",
+    "unpin": "Unpin"
+  },
+  "workspace": {
+    "label": "Workspace",
+    "backToWorktree": "All Workspaces",
+    "searchPlaceholder": "Search threads...",
+    "notFound": "This workspace does not exist.",
+    "noThreads": "No study sessions yet. Write your first note below."
+  },
+  "thread": {
+    "sentAt": "Sent at {{time}}",
+    "viewNotes": "View {{count}} notes / documents...",
+    "hideNotes": "Hide notes",
+    "untitled": "Untitled session",
+    "actions": { "folder": "Open folder", "addNote": "Add a note to this thread", "edit": "Edit thread" }
+  },
+  "composer": {
+    "newThread": "Write a new note (first line becomes a new thread's title)",
+    "replyPlaceholder": "Write a note",
+    "replyingTo": "Adding a note to: {{title}}",
+    "cancel": "Cancel",
+    "send": "Send",
+    "image": "Insert image",
+    "code": "Insert code"
+  },
+  "userMenu": {
+    "config": "Settings",
+    "forUser": "For user: @{{user}}",
+    "username": "Username",
+    "email": "Email",
+    "language": "Display language"
+  },
+  "languages": { "en": "English", "vi": "Tiếng Việt" }
+}

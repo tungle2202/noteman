@@ -4,15 +4,20 @@
   "version": "0.1.0",
   "identifier": "com.tungle2202.noteman",
   "build": {
-    "frontendDist": "../src"
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../src/dist"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
         "title": "noteman",
-        "width": 800,
-        "height": 600
+        "width": 1024,
+        "height": 720,
+        "minWidth": 800,
+        "minHeight": 600
       }
     ],
     "security": {

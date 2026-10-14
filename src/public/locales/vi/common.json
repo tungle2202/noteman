@@ -1,0 +1,58 @@
+{
+  "nav": { "home": "Trang chủ", "worktree": "Worktree", "user": "Tài khoản" },
+  "home": {
+    "title": "Thời khóa biểu",
+    "today": "Hôm nay",
+    "semester": "Học kỳ",
+    "searchPlaceholder": "Nhập mã môn, mã lớp, hoặc tên môn học",
+    "view": { "detail": "Chi tiết", "calendar": "Bảng biểu" },
+    "table": { "index": "Số thứ tự", "code": "Mã Học phần", "name": "Tên Học phần", "schedule": "Lịch học" },
+    "scheduleLine": "{{weekday}}: Tiết {{periods}} ({{time}}) - {{room}}",
+    "empty": "Không tìm thấy môn học nào.",
+    "prevMonth": "Tháng trước",
+    "nextMonth": "Tháng sau"
+  },
+  "weekday": { "2": "Thứ 2", "3": "Thứ 3", "4": "Thứ 4", "5": "Thứ 5", "6": "Thứ 6", "7": "Thứ 7", "8": "Chủ nhật" },
+  "worktree": {
+    "title": "Worktree",
+    "searchPlaceholder": "Tìm kiếm...",
+    "works": "Không gian của @{{user}}",
+    "pinned": "Workspace đã ghim",
+    "recent": "Workspace gần đây",
+    "emptyPinned": "Chưa ghim gì. Hãy ghim môn học để truy cập nhanh.",
+    "emptyRecent": "Truy cập một môn học và nó sẽ xuất hiện ở đây.",
+    "pin": "Ghim",
+    "unpin": "Bỏ ghim"
+  },
+  "workspace": {
+    "label": "Workspace",
+    "backToWorktree": "Tất cả Workspace",
+    "searchPlaceholder": "Tìm kiếm thread...",
+    "notFound": "Workspace này không tồn tại.",
+    "noThreads": "Chưa có buổi học nào. Hãy viết ghi chú đầu tiên ở bên dưới."
+  },
+  "thread": {
+    "sentAt": "Đã gửi lúc {{time}}",
+    "viewNotes": "Xem {{count}} ghi chú / tài liệu...",
+    "hideNotes": "Ẩn ghi chú",
+    "untitled": "Buổi học chưa đặt tên",
+    "actions": { "folder": "Mở thư mục", "addNote": "Thêm ghi chú vào thread này", "edit": "Sửa thread" }
+  },
+  "composer": {
+    "newThread": "Nhập ghi chú mới (dòng đầu sẽ là tiêu đề thread mới)",
+    "replyPlaceholder": "Nhập ghi chú",
+    "replyingTo": "Thêm ghi chú vào: {{title}}",
+    "cancel": "Hủy",
+    "send": "Gửi",
+    "image": "Chèn ảnh",
+    "code": "Chèn mã"
+  },
+  "userMenu": {
+    "config": "Cấu hình",
+    "forUser": "Cho người dùng: @{{user}}",
+    "username": "Username",
+    "email": "Email",
+    "language": "Ngôn ngữ hiển thị"
+  },
+  "languages": { "en": "English", "vi": "Tiếng Việt" }
+}
