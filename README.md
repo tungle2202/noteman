@@ -1,4 +1,14 @@
-# Noteman
+# noteman
+
+```text
+███╗   ██╗ ██████╗ ████████╗███████╗███╗   ███╗ █████╗ ███╗   ██╗
+████╗  ██║██╔═══██╗╚══██╔══╝██╔════╝████╗ ████║██╔══██╗████╗  ██║
+██╔██╗ ██║██║   ██║   ██║   █████╗  ██╔████╔██║███████║██╔██╗ ██║
+██║╚██╗██║██║   ██║   ██║   ██╔══╝  ██║╚██╔╝██║██╔══██║██║╚██╗██║
+██║ ╚████║╚██████╔╝   ██║   ███████╗██║ ╚═╝ ██║██║  ██║██║ ╚████║
+╚═╝  ╚═══╝ ╚═════╝    ╚═╝   ╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝
+                                                                 
+```
 
 > A local notebook manager, manage your class materials based on course and session, provide you an Integrated-Studying-Environment with GUI. Your files with be stored strictly to where it belongs to automatically, and you can do most stuffs you need to do in a session without context-switching.
 
