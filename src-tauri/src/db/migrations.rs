@@ -59,7 +59,32 @@ pub const MIGRATIONS: &[Migration] = &[
         CREATE INDEX IF NOT EXISTS idx_tasks_thread_id ON tasks(thread_id);
         "#,
     },
+    Migration {
+        version: 2,
+        name: "002_add_users",
+        sql: r#"
+        -- Users table
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY NOT NULL,
+            user_id TEXT GENERATED ALWAYS AS (id) VIRTUAL,
+            userid TEXT GENERATED ALWAYS AS (id) VIRTUAL,
+            username TEXT NOT NULL UNIQUE,
+            email TEXT UNIQUE,
+            hashed_password TEXT,
+            salt TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+        CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+        -- Add optional user_id reference to files table
+        ALTER TABLE files ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_files_user_id ON files(user_id);
+        "#,
+    },
 ];
+
 
 /// Enforces SQLite PRAGMAs, ensures migration audit log table, and executes pending migrations in order.
 pub fn run_migrations(conn: &mut Connection) -> Result<i32, DbError> {

@@ -1,10 +1,11 @@
 use tauri::State;
 use crate::db::manager::DbManager;
 use crate::db::models::{
-    CreateFileInput, CreateSubjectInput, CreateTaskInput, CreateThreadInput, DbStats,
-    FileIntegrityItem, FileRecord, MigrationInfo, Subject, Task, Thread, UpdateSubjectInput,
-    UpdateTaskInput, UpdateThreadInput,
+    CreateFileInput, CreateSubjectInput, CreateTaskInput, CreateThreadInput, CreateUserInput,
+    DbStats, FileIntegrityItem, FileRecord, MigrationInfo, Subject, Task, Thread, UpdateSubjectInput,
+    UpdateTaskInput, UpdateThreadInput, User,
 };
+
 
 #[tauri::command]
 pub fn db_get_stats(db: State<'_, DbManager>) -> Result<DbStats, String> {
@@ -127,9 +128,17 @@ pub fn db_save_file(
     file_type: String,
     is_material: bool,
     data: Vec<u8>,
+    user_id: Option<String>,
 ) -> Result<FileRecord, String> {
-    db.save_file(&thread_id, &file_name, &file_type, is_material, &data)
-        .map_err(|e| e.to_string())
+    db.save_user_file(
+        user_id.as_deref(),
+        &thread_id,
+        &file_name,
+        &file_type,
+        is_material,
+        &data,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// USE CASE: External File Importing (Zero-IPC-Memory Overhead)
@@ -150,10 +159,19 @@ pub fn db_import_file(
     file_name: String,
     file_type: String,
     is_material: bool,
+    user_id: Option<String>,
 ) -> Result<FileRecord, String> {
-    db.import_file(&thread_id, &source_path, &file_name, &file_type, is_material)
-        .map_err(|e| e.to_string())
+    db.import_user_file(
+        user_id.as_deref(),
+        &thread_id,
+        &source_path,
+        &file_name,
+        &file_type,
+        is_material,
+    )
+    .map_err(|e| e.to_string())
 }
+
 
 #[tauri::command]
 pub fn db_rename_file(
@@ -257,3 +275,51 @@ pub fn db_get_applied_migrations(
 pub fn db_purge_trash(db: State<'_, DbManager>) -> Result<(), String> {
     db.purge_trash().map_err(|e| e.to_string())
 }
+
+// =========================================================================
+// USERS & AUTHENTICATION
+// =========================================================================
+
+#[tauri::command]
+pub fn db_create_user(
+    db: State<'_, DbManager>,
+    input: CreateUserInput,
+) -> Result<User, String> {
+    db.create_user(input).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn db_login(
+    db: State<'_, DbManager>,
+    username: String,
+    password: Option<String>,
+) -> Result<User, String> {
+    db.login(&username, password.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn db_logout(db: State<'_, DbManager>) -> Result<(), String> {
+    db.logout().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn db_get_current_user(db: State<'_, DbManager>) -> Result<Option<User>, String> {
+    db.get_current_user().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn db_get_users(db: State<'_, DbManager>) -> Result<Vec<User>, String> {
+    db.get_users().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn db_get_user(db: State<'_, DbManager>, id: String) -> Result<User, String> {
+    db.get_user(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn db_delete_user(db: State<'_, DbManager>, id: String) -> Result<(), String> {
+    db.delete_user(&id).map_err(|e| e.to_string())
+}
+

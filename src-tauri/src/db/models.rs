@@ -52,6 +52,8 @@ pub struct FileRecord {
     pub file_type: String,
     pub storage_path: String,
     pub is_material: bool,
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,7 +64,10 @@ pub struct CreateFileInput {
     pub file_type: String,
     pub storage_path: String,
     pub is_material: bool,
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Task {
@@ -109,7 +114,38 @@ pub struct DbStats {
     pub threads_count: i64,
     pub files_count: i64,
     pub tasks_count: i64,
+    #[serde(default)]
+    pub users_count: i64,
     pub schema_version: i32,
     pub db_path: String,
     pub app_dir: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct User {
+    pub id: String,
+    #[serde(rename = "user_id", alias = "userId")]
+    pub user_id: String,
+    pub userid: String,
+    pub username: String,
+    pub email: Option<String>,
+    #[serde(rename = "hashed_password", alias = "hashedPassword")]
+    pub hashed_password: Option<String>,
+    pub salt: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateUserInput {
+    pub id: Option<String>,
+    pub username: String,
+    pub email: Option<String>,
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoginInput {
+    pub username: String,
+    pub password: Option<String>,
+}
+

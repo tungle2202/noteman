@@ -6,9 +6,9 @@ use chrono::Utc;
 
 use crate::db::error::DbError;
 use crate::db::models::{
-    CreateFileInput, CreateSubjectInput, CreateTaskInput, CreateThreadInput, DbStats,
-    FileIntegrityItem, FileRecord, Subject, Task, Thread, UpdateSubjectInput, UpdateTaskInput,
-    UpdateThreadInput,
+    CreateFileInput, CreateSubjectInput, CreateTaskInput, CreateThreadInput, CreateUserInput,
+    DbStats, FileIntegrityItem, FileRecord, Subject, Task, Thread, UpdateSubjectInput,
+    UpdateTaskInput, UpdateThreadInput, User,
 };
 use crate::db::schema::initialize_schema;
 
@@ -16,21 +16,14 @@ pub struct DbManager {
     conn: Mutex<Connection>,
     pub db_path: PathBuf,
     pub app_dir: PathBuf,
+    current_user: Mutex<Option<User>>,
 }
+
 
 impl DbManager {
     /// Standard production subdirectories according to production_directory_tree.json
     const MANAGED_DIRS: &'static [&'static str] = &[
         "db",
-        "notes/markdown",
-        "notes/latex",
-        "notes/misc",
-        "materials/pdf",
-        "materials/slides",
-        "materials/docs",
-        "materials/archives",
-        "media/images",
-        "media/audio",
         "cache/katex",
         "cache/previews",
         "cache/latex_builds",
@@ -39,6 +32,7 @@ impl DbManager {
         "config/templates/markdown",
         "config/templates/latex",
         "logs",
+        "users/default",
     ];
 
     /// Initialize a new DbManager with a file-backed SQLite database.
@@ -62,6 +56,7 @@ impl DbManager {
             conn: Mutex::new(conn),
             db_path,
             app_dir,
+            current_user: Mutex::new(None),
         })
     }
 
@@ -81,8 +76,10 @@ impl DbManager {
             conn: Mutex::new(conn),
             db_path: PathBuf::from(":memory:"),
             app_dir,
+            current_user: Mutex::new(None),
         })
     }
+
 
     fn get_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, DbError> {
         self.conn
@@ -171,43 +168,66 @@ impl DbManager {
         let _ = std::fs::remove_dir_all(trash_dir);
     }
 
-    /// Cleans up empty parent directories left behind after successful file removal.
+    /// Cleans up empty parent directories recursively left behind after successful file removal.
     fn clean_empty_parent_dirs(&self, staged_moves: &[(PathBuf, PathBuf)]) {
         for (abs_src, _) in staged_moves {
-            if let Some(parent) = abs_src.parent() {
-                if parent.starts_with(&self.app_dir) && parent != self.app_dir {
-                    let is_empty = std::fs::read_dir(parent)
-                        .map(|mut it| it.next().is_none())
-                        .unwrap_or(false);
-                    if is_empty {
-                        let _ = std::fs::remove_dir(parent);
+            let mut curr = abs_src.parent();
+            while let Some(parent) = curr {
+                if !parent.starts_with(&self.app_dir)
+                    || parent == self.app_dir
+                    || parent == self.app_dir.join("users")
+                {
+                    break;
+                }
+                let is_empty = std::fs::read_dir(parent)
+                    .map(|mut it| it.next().is_none())
+                    .unwrap_or(false);
+                if is_empty {
+                    let _ = std::fs::remove_dir(parent);
+                    curr = parent.parent();
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Cleans up thread-specific directories across user workspaces if empty.
+    fn clean_thread_managed_dirs(&self, thread_id: &str) {
+        let users_root = self.app_dir.join("users");
+        if let Ok(user_entries) = std::fs::read_dir(&users_root) {
+            for user_entry in user_entries.flatten() {
+                let courses_dir = user_entry.path().join("courses");
+                if let Ok(course_entries) = std::fs::read_dir(&courses_dir) {
+                    for course_entry in course_entries.flatten() {
+                        let thread_dir = course_entry.path().join(thread_id);
+                        if thread_dir.exists() {
+                            let is_empty = std::fs::read_dir(&thread_dir)
+                                .map(|mut it| it.next().is_none())
+                                .unwrap_or(false);
+                            if is_empty {
+                                let _ = std::fs::remove_dir_all(&thread_dir);
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    /// Cleans up thread-specific directories across all managed storage categories if empty.
-    fn clean_thread_managed_dirs(&self, thread_id: &str) {
-        let categories = [
-            "notes/markdown",
-            "notes/latex",
-            "notes/misc",
-            "materials/pdf",
-            "materials/slides",
-            "materials/docs",
-            "materials/archives",
-            "media/images",
-            "media/audio",
-        ];
-        for cat in categories {
-            let thread_dir = self.app_dir.join(cat).join(thread_id);
-            if thread_dir.exists() {
-                let is_empty = std::fs::read_dir(&thread_dir)
-                    .map(|mut it| it.next().is_none())
-                    .unwrap_or(false);
-                if is_empty {
-                    let _ = std::fs::remove_dir(&thread_dir);
+    /// Cleans up subject-specific course directories across user workspaces if empty.
+    fn clean_subject_managed_dirs(&self, subject_id: &str) {
+        let users_root = self.app_dir.join("users");
+        if let Ok(user_entries) = std::fs::read_dir(&users_root) {
+            for user_entry in user_entries.flatten() {
+                let course_dir = user_entry.path().join("courses").join(subject_id);
+                if course_dir.exists() {
+                    let is_empty = std::fs::read_dir(&course_dir)
+                        .map(|mut it| it.next().is_none())
+                        .unwrap_or(false);
+                    if is_empty {
+                        let _ = std::fs::remove_dir_all(&course_dir);
+                    }
                 }
             }
         }
@@ -226,8 +246,205 @@ impl DbManager {
     }
 
     // =========================================================================
+    // USERS, WORKSPACES & AUTHENTICATION (SALT & PEPPER)
+    // =========================================================================
+
+    pub const DEFAULT_PEPPER: &'static str = "noteman_local_first_secret_pepper_2026";
+
+    pub fn get_pepper() -> String {
+        std::env::var("NOTEMAN_PEPPER").unwrap_or_else(|_| Self::DEFAULT_PEPPER.to_string())
+    }
+
+    pub fn hash_password_with_salt_and_pepper(password: &str, salt: &str, pepper: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(password.as_bytes());
+        hasher.update(b":");
+        hasher.update(salt.as_bytes());
+        hasher.update(b":");
+        hasher.update(pepper.as_bytes());
+        let result = hasher.finalize();
+        hex::encode(result)
+    }
+
+    pub fn set_current_user(&self, user: Option<User>) -> Result<(), DbError> {
+        let mut cur = self
+            .current_user
+            .lock()
+            .map_err(|e| DbError::LockPoisoned(e.to_string()))?;
+        *cur = user;
+        Ok(())
+    }
+
+    pub fn get_current_user(&self) -> Result<Option<User>, DbError> {
+        let cur = self
+            .current_user
+            .lock()
+            .map_err(|e| DbError::LockPoisoned(e.to_string()))?;
+        Ok(cur.clone())
+    }
+
+    pub fn get_current_user_id(&self) -> Option<String> {
+        self.current_user
+            .lock()
+            .ok()
+            .and_then(|u| u.as_ref().map(|user| user.id.clone()))
+    }
+
+    pub fn create_user(&self, input: CreateUserInput) -> Result<User, DbError> {
+        let trimmed_username = input.username.trim();
+        if trimmed_username.is_empty() {
+            return Err(DbError::Validation("Username cannot be empty".to_string()));
+        }
+
+        let user_id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let now = Utc::now().to_rfc3339();
+
+        let (hashed_password, salt) = match input.password.as_deref().map(str::trim) {
+            Some(pwd) if !pwd.is_empty() => {
+                let salt_str = Uuid::new_v4().to_string();
+                let pepper = Self::get_pepper();
+                let hash = Self::hash_password_with_salt_and_pepper(pwd, &salt_str, &pepper);
+                (Some(hash), Some(salt_str))
+            }
+            _ => (None, None),
+        };
+
+        let conn = self.get_conn()?;
+        conn.execute(
+            "INSERT INTO users (id, username, email, hashed_password, salt, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                user_id,
+                trimmed_username,
+                input.email.as_deref().map(str::trim),
+                hashed_password,
+                salt,
+                now
+            ],
+        )?;
+
+        // Ensure user directory exists in users/{user_id}
+        let user_dir = self.app_dir.join("users").join(&user_id);
+        let _ = std::fs::create_dir_all(&user_dir);
+
+        Ok(User {
+            id: user_id.clone(),
+            user_id: user_id.clone(),
+            userid: user_id,
+            username: trimmed_username.to_string(),
+            email: input.email.map(|e| e.trim().to_string()),
+            hashed_password,
+            salt,
+            created_at: now,
+        })
+    }
+
+    pub fn login(&self, username_or_id: &str, password: Option<&str>) -> Result<User, DbError> {
+        let user = self.get_user_by_username_or_id(username_or_id)?;
+
+        if let Some(ref stored_hash) = user.hashed_password {
+            if !stored_hash.trim().is_empty() {
+                let pwd = password.unwrap_or("").trim();
+                if pwd.is_empty() {
+                    return Err(DbError::Validation("Password required for this user".to_string()));
+                }
+                let salt = user.salt.as_deref().unwrap_or("");
+                let pepper = Self::get_pepper();
+                let computed_hash = Self::hash_password_with_salt_and_pepper(pwd, salt, &pepper);
+                if computed_hash != *stored_hash {
+                    return Err(DbError::Validation("Invalid password".to_string()));
+                }
+            }
+        }
+
+        self.set_current_user(Some(user.clone()))?;
+        Ok(user)
+    }
+
+    pub fn logout(&self) -> Result<(), DbError> {
+        self.set_current_user(None)
+    }
+
+    pub fn get_users(&self) -> Result<Vec<User>, DbError> {
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, username, email, hashed_password, salt, created_at FROM users ORDER BY created_at ASC"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            Ok(User {
+                id: id.clone(),
+                user_id: id.clone(),
+                userid: id,
+                username: row.get(1)?,
+                email: row.get(2)?,
+                hashed_password: row.get(3)?,
+                salt: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+
+        let mut users = Vec::new();
+        for u in rows {
+            users.push(u?);
+        }
+        Ok(users)
+    }
+
+    pub fn get_user_by_username_or_id(&self, identifier: &str) -> Result<User, DbError> {
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, username, email, hashed_password, salt, created_at 
+             FROM users 
+             WHERE username = ?1 OR id = ?1 OR email = ?1",
+        )?;
+        let user = stmt
+            .query_row(params![identifier], |row| {
+                let id: String = row.get(0)?;
+                Ok(User {
+                    id: id.clone(),
+                    user_id: id.clone(),
+                    userid: id,
+                    username: row.get(1)?,
+                    email: row.get(2)?,
+                    hashed_password: row.get(3)?,
+                    salt: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })
+            .optional()?;
+
+        user.ok_or_else(|| DbError::NotFound(format!("User '{}' not found", identifier)))
+    }
+
+    pub fn get_user(&self, id: &str) -> Result<User, DbError> {
+        self.get_user_by_username_or_id(id)
+    }
+
+    pub fn delete_user(&self, id: &str) -> Result<(), DbError> {
+        let mut conn = self.get_conn()?;
+        let tx = conn.transaction()?;
+        let affected = tx.execute("DELETE FROM users WHERE id = ?1", params![id])?;
+        if affected == 0 {
+            return Err(DbError::NotFound(format!("User '{}' not found", id)));
+        }
+        tx.commit()?;
+
+        // If the deleted user is current user, log out
+        if let Ok(Some(current)) = self.get_current_user() {
+            if current.id == id {
+                let _ = self.logout();
+            }
+        }
+
+        Ok(())
+    }
+
+    // =========================================================================
     // SUBJECTS CRUD
     // =========================================================================
+
 
     pub fn create_subject(&self, input: CreateSubjectInput) -> Result<Subject, DbError> {
         if input.id.trim().is_empty() {
@@ -356,9 +573,10 @@ impl DbManager {
             Ok(()) => {
                 let _ = std::fs::remove_dir_all(&trash_dir);
                 self.clean_empty_parent_dirs(&staged);
-                for thread_id in thread_ids {
-                    self.clean_thread_managed_dirs(&thread_id);
+                for thread_id in &thread_ids {
+                    self.clean_thread_managed_dirs(thread_id);
                 }
+                self.clean_subject_managed_dirs(id);
                 Ok(())
             }
             Err(e) => {
@@ -525,15 +743,16 @@ impl DbManager {
 
         let conn = self.get_conn()?;
         conn.execute(
-            "INSERT INTO files (id, thread_id, file_name, file_type, storage_path, is_material) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO files (id, thread_id, file_name, file_type, storage_path, is_material, user_id) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 id,
                 input.thread_id,
                 input.file_name,
                 input.file_type,
                 input.storage_path,
-                is_material_int
+                is_material_int,
+                input.user_id,
             ],
         )?;
 
@@ -544,12 +763,30 @@ impl DbManager {
             file_type: input.file_type,
             storage_path: input.storage_path,
             is_material: input.is_material,
+            user_id: input.user_id,
         })
     }
 
-    /// Determine strict destination directory path based on file_type and is_material,
-    /// adhering to the Linux package manager architecture in production_directory_tree.json.
+    /// Determine strict destination directory path based on subject_id, thread_id, file_type and is_material,
+    /// adhering to the architecture in production_directory_tree.json.
     pub fn compute_storage_path(
+        subject_id: &str,
+        thread_id: &str,
+        file_id: &str,
+        file_name: &str,
+        file_type: &str,
+        is_material: bool,
+    ) -> String {
+        Self::compute_storage_path_for_user(None, subject_id, thread_id, file_id, file_name, file_type, is_material)
+    }
+
+    /// Determine destination directory path partitioned by user_id for multi-user isolation.
+    /// Hierarchy mirrors the UI flow:
+    /// users/{user_id}/courses/{subject_id}/{thread_id}/[notes|materials|media]/{category}/{file_id}_{file_name}
+    /// Defaults to user_id = "default" if user_id is None or empty.
+    pub fn compute_storage_path_for_user(
+        user_id: Option<&str>,
+        subject_id: &str,
         thread_id: &str,
         file_id: &str,
         file_name: &str,
@@ -557,26 +794,36 @@ impl DbManager {
         is_material: bool,
     ) -> String {
         let ext = file_type.trim_start_matches('.').to_lowercase();
-        let target_dir = if ["png", "jpg", "jpeg", "webp", "svg", "gif"].contains(&ext.as_str()) {
-            "media/images"
+        let (base_dir, sub_type) = if ["png", "jpg", "jpeg", "webp", "svg", "gif"].contains(&ext.as_str()) {
+            ("media", "images")
         } else if ["mp3", "wav", "m4a", "ogg", "aac"].contains(&ext.as_str()) {
-            "media/audio"
+            ("media", "audio")
         } else if is_material {
-            match ext.as_str() {
-                "pdf" => "materials/pdf",
-                "pptx" | "ppt" | "odp" | "key" => "materials/slides",
-                "zip" | "tar" | "gz" | "xz" | "7z" | "rar" => "materials/archives",
-                _ => "materials/docs",
-            }
+            let cat = match ext.as_str() {
+                "pdf" => "pdf",
+                "pptx" | "ppt" | "odp" | "key" => "slides",
+                "zip" | "tar" | "gz" | "xz" | "7z" | "rar" => "archives",
+                _ => "docs",
+            };
+            ("materials", cat)
         } else {
-            match ext.as_str() {
-                "md" | "markdown" => "notes/markdown",
-                "tex" | "bib" | "sty" | "cls" => "notes/latex",
-                _ => "notes/misc",
-            }
+            let cat = match ext.as_str() {
+                "md" | "markdown" => "markdown",
+                "tex" | "bib" | "sty" | "cls" => "latex",
+                _ => "misc",
+            };
+            ("notes", cat)
         };
 
-        format!("{}/{}/{}_{}", target_dir, thread_id, file_id, file_name)
+        let uid = match user_id.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(u) => u,
+            None => "default",
+        };
+
+        format!(
+            "users/{}/courses/{}/{}/{}/{}/{}_{}",
+            uid, subject_id, thread_id, base_dir, sub_type, file_id, file_name
+        )
     }
 
     /// Linux-package-manager inspired: writes physical file content into managed storage
@@ -589,11 +836,38 @@ impl DbManager {
         is_material: bool,
         data: &[u8],
     ) -> Result<FileRecord, DbError> {
+        self.save_user_file(None, thread_id, file_name, file_type, is_material, data)
+    }
+
+    /// Writes physical file content partitioned into the active/specified user's directory.
+    pub fn save_user_file(
+        &self,
+        user_id: Option<&str>,
+        thread_id: &str,
+        file_name: &str,
+        file_type: &str,
+        is_material: bool,
+        data: &[u8],
+    ) -> Result<FileRecord, DbError> {
         // Verify thread exists
-        let _ = self.get_thread(thread_id)?;
+        let thread = self.get_thread(thread_id)?;
+
+        let effective_user_id = user_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .or_else(|| self.get_current_user_id());
 
         let file_id = Uuid::new_v4().to_string();
-        let relative_path = Self::compute_storage_path(thread_id, &file_id, file_name, file_type, is_material);
+        let relative_path = Self::compute_storage_path_for_user(
+            effective_user_id.as_deref(),
+            &thread.subject_id,
+            thread_id,
+            &file_id,
+            file_name,
+            file_type,
+            is_material,
+        );
         let abs_path = self.resolve_storage_path(&relative_path);
 
         if let Some(parent) = abs_path.parent() {
@@ -608,6 +882,7 @@ impl DbManager {
             file_type: file_type.to_string(),
             storage_path: relative_path,
             is_material,
+            user_id: effective_user_id,
         });
 
         match record_res {
@@ -630,8 +905,21 @@ impl DbManager {
         file_type: &str,
         is_material: bool,
     ) -> Result<FileRecord, DbError> {
+        self.import_user_file(None, thread_id, source_path, file_name, file_type, is_material)
+    }
+
+    /// Fast zero-IPC-memory disk copy: imports an existing external file into the active/specified user's directory.
+    pub fn import_user_file(
+        &self,
+        user_id: Option<&str>,
+        thread_id: &str,
+        source_path: &str,
+        file_name: &str,
+        file_type: &str,
+        is_material: bool,
+    ) -> Result<FileRecord, DbError> {
         // Verify thread exists
-        let _ = self.get_thread(thread_id)?;
+        let thread = self.get_thread(thread_id)?;
 
         let src = PathBuf::from(source_path);
         if !src.is_file() {
@@ -641,8 +929,22 @@ impl DbManager {
             )));
         }
 
+        let effective_user_id = user_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .or_else(|| self.get_current_user_id());
+
         let file_id = Uuid::new_v4().to_string();
-        let relative_path = Self::compute_storage_path(thread_id, &file_id, file_name, file_type, is_material);
+        let relative_path = Self::compute_storage_path_for_user(
+            effective_user_id.as_deref(),
+            &thread.subject_id,
+            thread_id,
+            &file_id,
+            file_name,
+            file_type,
+            is_material,
+        );
         let abs_dest = self.resolve_storage_path(&relative_path);
 
         if let Some(parent) = abs_dest.parent() {
@@ -659,6 +961,7 @@ impl DbManager {
             file_type: file_type.to_string(),
             storage_path: relative_path,
             is_material,
+            user_id: effective_user_id,
         });
 
         match record_res {
@@ -669,6 +972,7 @@ impl DbManager {
             }
         }
     }
+
 
     pub fn read_file(&self, file_id: &str) -> Result<Vec<u8>, DbError> {
         let file_record = self.get_file(file_id)?;
@@ -712,7 +1016,7 @@ impl DbManager {
         // Retrieve existing file record
         let current_file: FileRecord = {
             let mut stmt = conn.prepare(
-                "SELECT id, thread_id, file_name, file_type, storage_path, is_material 
+                "SELECT id, thread_id, file_name, file_type, storage_path, is_material, user_id 
                  FROM files WHERE id = ?1",
             )?;
             let file = stmt
@@ -725,6 +1029,7 @@ impl DbManager {
                         file_type: row.get(3)?,
                         storage_path: row.get(4)?,
                         is_material: is_material_int == 1,
+                        user_id: row.get(6)?,
                     })
                 })
                 .optional()?;
@@ -760,8 +1065,17 @@ impl DbManager {
             }
         };
 
+        let subject_id: String = {
+            let mut stmt = conn.prepare("SELECT subject_id FROM threads WHERE id = ?1")?;
+            stmt.query_row(params![current_file.thread_id], |row| row.get(0))
+                .optional()?
+                .ok_or_else(|| DbError::NotFound(format!("Thread '{}' not found", current_file.thread_id)))?
+        };
+
         let old_abs_path = self.resolve_storage_path(&current_file.storage_path);
-        let new_storage_path = Self::compute_storage_path(
+        let new_storage_path = Self::compute_storage_path_for_user(
+            current_file.user_id.as_deref(),
+            &subject_id,
             &current_file.thread_id,
             &current_file.id,
             &effective_name,
@@ -820,18 +1134,27 @@ impl DbManager {
 
         match tx_result {
             Ok(()) => {
-                // If old directory is empty and different from new directory, clean it up
+                // If old directory is empty and different from new directory, recursively clean it up
                 if let Some(old_parent) = old_abs_path.parent() {
                     if let Some(new_parent) = new_abs_path.parent() {
-                        if old_parent != new_parent
-                            && old_parent.starts_with(&self.app_dir)
-                            && old_parent != self.app_dir
-                        {
-                            let is_empty = std::fs::read_dir(old_parent)
-                                .map(|mut it| it.next().is_none())
-                                .unwrap_or(false);
-                            if is_empty {
-                                let _ = std::fs::remove_dir(old_parent);
+                        if old_parent != new_parent {
+                            let mut curr = Some(old_parent);
+                            while let Some(dir) = curr {
+                                if !dir.starts_with(&self.app_dir)
+                                    || dir == self.app_dir
+                                    || dir == self.app_dir.join("users")
+                                {
+                                    break;
+                                }
+                                let is_empty = std::fs::read_dir(dir)
+                                    .map(|mut it| it.next().is_none())
+                                    .unwrap_or(false);
+                                if is_empty {
+                                    let _ = std::fs::remove_dir(dir);
+                                    curr = dir.parent();
+                                } else {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -844,6 +1167,7 @@ impl DbManager {
                     file_type: effective_type,
                     storage_path: new_storage_path,
                     is_material: current_file.is_material,
+                    user_id: current_file.user_id,
                 })
             }
             Err(e) => {
@@ -857,7 +1181,7 @@ impl DbManager {
     pub fn get_files_by_thread(&self, thread_id: &str) -> Result<Vec<FileRecord>, DbError> {
         let conn = self.get_conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, thread_id, file_name, file_type, storage_path, is_material 
+            "SELECT id, thread_id, file_name, file_type, storage_path, is_material, user_id 
              FROM files WHERE thread_id = ?1 ORDER BY file_name ASC",
         )?;
         let rows = stmt.query_map(params![thread_id], |row| {
@@ -869,6 +1193,7 @@ impl DbManager {
                 file_type: row.get(3)?,
                 storage_path: row.get(4)?,
                 is_material: is_material_int == 1,
+                user_id: row.get(6)?,
             })
         })?;
 
@@ -882,7 +1207,7 @@ impl DbManager {
     pub fn get_file(&self, id: &str) -> Result<FileRecord, DbError> {
         let conn = self.get_conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, thread_id, file_name, file_type, storage_path, is_material 
+            "SELECT id, thread_id, file_name, file_type, storage_path, is_material, user_id 
              FROM files WHERE id = ?1",
         )?;
         let file = stmt
@@ -895,9 +1220,11 @@ impl DbManager {
                     file_type: row.get(3)?,
                     storage_path: row.get(4)?,
                     is_material: is_material_int == 1,
+                    user_id: row.get(6)?,
                 })
             })
             .optional()?;
+
 
         file.ok_or_else(|| DbError::NotFound(format!("File '{}' not found", id)))
     }
@@ -1087,6 +1414,9 @@ impl DbManager {
             conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
         let tasks_count: i64 =
             conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))?;
+        let users_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
+            .unwrap_or(0);
         let schema_version: i32 =
             crate::db::migrations::get_schema_version(&conn)?;
 
@@ -1095,12 +1425,14 @@ impl DbManager {
             threads_count,
             files_count,
             tasks_count,
+            users_count,
             schema_version,
             db_path: self.db_path.to_string_lossy().to_string(),
             app_dir: self.app_dir.to_string_lossy().to_string(),
         })
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1170,7 +1502,8 @@ mod tests {
         assert_eq!(stats.threads_count, 1);
         assert_eq!(stats.files_count, 1);
         assert_eq!(stats.tasks_count, 1);
-        assert_eq!(stats.schema_version, 1);
+        assert_eq!(stats.users_count, 0);
+        assert_eq!(stats.schema_version, 2);
 
         // 7. Test Cascade Delete with Two-Phase Staging: deleting subject should delete thread, file, task
         manager.delete_subject("IT3080", true).expect("delete subject");
@@ -1304,29 +1637,33 @@ mod tests {
 
     #[test]
     fn test_storage_routing_matrix() {
-        let path_md = DbManager::compute_storage_path("t1", "f1", "notes.md", ".md", false);
-        assert_eq!(path_md, "notes/markdown/t1/f1_notes.md");
+        let path_md = DbManager::compute_storage_path("CS101", "t1", "f1", "notes.md", ".md", false);
+        assert_eq!(path_md, "users/default/courses/CS101/t1/notes/markdown/f1_notes.md");
 
-        let path_tex = DbManager::compute_storage_path("t1", "f2", "paper.tex", ".tex", false);
-        assert_eq!(path_tex, "notes/latex/t1/f2_paper.tex");
+        let path_tex = DbManager::compute_storage_path("CS101", "t1", "f2", "paper.tex", ".tex", false);
+        assert_eq!(path_tex, "users/default/courses/CS101/t1/notes/latex/f2_paper.tex");
 
-        let path_pdf = DbManager::compute_storage_path("t1", "f3", "slide.pdf", ".pdf", true);
-        assert_eq!(path_pdf, "materials/pdf/t1/f3_slide.pdf");
+        let path_pdf = DbManager::compute_storage_path("CS101", "t1", "f3", "slide.pdf", ".pdf", true);
+        assert_eq!(path_pdf, "users/default/courses/CS101/t1/materials/pdf/f3_slide.pdf");
 
-        let path_slides = DbManager::compute_storage_path("t1", "f4", "lecture.pptx", ".pptx", true);
-        assert_eq!(path_slides, "materials/slides/t1/f4_lecture.pptx");
+        let path_slides = DbManager::compute_storage_path("CS101", "t1", "f4", "lecture.pptx", ".pptx", true);
+        assert_eq!(path_slides, "users/default/courses/CS101/t1/materials/slides/f4_lecture.pptx");
 
-        let path_doc = DbManager::compute_storage_path("t1", "f5", "spec.docx", ".docx", true);
-        assert_eq!(path_doc, "materials/docs/t1/f5_spec.docx");
+        let path_doc = DbManager::compute_storage_path("CS101", "t1", "f5", "spec.docx", ".docx", true);
+        assert_eq!(path_doc, "users/default/courses/CS101/t1/materials/docs/f5_spec.docx");
 
-        let path_archive = DbManager::compute_storage_path("t1", "f6", "code.zip", ".zip", true);
-        assert_eq!(path_archive, "materials/archives/t1/f6_code.zip");
+        let path_archive = DbManager::compute_storage_path("CS101", "t1", "f6", "code.zip", ".zip", true);
+        assert_eq!(path_archive, "users/default/courses/CS101/t1/materials/archives/f6_code.zip");
 
-        let path_img = DbManager::compute_storage_path("t1", "f7", "diagram.png", ".png", false);
-        assert_eq!(path_img, "media/images/t1/f7_diagram.png");
+        let path_img = DbManager::compute_storage_path("CS101", "t1", "f7", "diagram.png", ".png", false);
+        assert_eq!(path_img, "users/default/courses/CS101/t1/media/images/f7_diagram.png");
 
-        let path_audio = DbManager::compute_storage_path("t1", "f8", "recording.mp3", ".mp3", true);
-        assert_eq!(path_audio, "media/audio/t1/f8_recording.mp3");
+        let path_audio = DbManager::compute_storage_path("CS101", "t1", "f8", "recording.mp3", ".mp3", true);
+        assert_eq!(path_audio, "users/default/courses/CS101/t1/media/audio/f8_recording.mp3");
+
+        // User-specific workspace partitioning
+        let path_user = DbManager::compute_storage_path_for_user(Some("usr_tung"), "CS101", "t1", "f1", "notes.md", ".md", false);
+        assert_eq!(path_user, "users/usr_tung/courses/CS101/t1/notes/markdown/f1_notes.md");
     }
 
     #[test]
@@ -1445,12 +1782,14 @@ mod tests {
 
         // Schema version check
         let version = manager.get_schema_version().expect("get schema version");
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
 
         let applied = manager.get_applied_migrations().expect("get applied migrations");
-        assert_eq!(applied.len(), 1);
+        assert_eq!(applied.len(), 2);
         assert_eq!(applied[0].version, 1);
         assert_eq!(applied[0].name, "001_initial_schema");
+        assert_eq!(applied[1].version, 2);
+        assert_eq!(applied[1].name, "002_add_users");
 
         // Test trash sweeper
         let fake_stale_trash = temp_dir.join("cache/trash/stale-op-123");
@@ -1506,7 +1845,7 @@ mod tests {
         assert_eq!(renamed.file_type, ".md");
         assert_eq!(
             renamed.storage_path,
-            format!("notes/markdown/{}/{}_bst_notes.md", thread.id, file.id)
+            format!("users/default/courses/CS201/{}/notes/markdown/{}_bst_notes.md", thread.id, file.id)
         );
 
         // Old file must no longer exist, new file must exist with same content
@@ -1572,7 +1911,7 @@ mod tests {
         let file = manager
             .save_file(&thread.id, "sorting.txt", ".txt", false, b"quicksort")
             .expect("save misc file");
-        assert!(file.storage_path.starts_with("notes/misc/"));
+        assert!(file.storage_path.contains("/notes/misc/"));
         let old_abs = manager.resolve_storage_path(&file.storage_path);
         assert!(old_abs.exists());
 
@@ -1582,7 +1921,7 @@ mod tests {
             .expect("rename to markdown");
         assert_eq!(renamed.file_name, "sorting.md");
         assert_eq!(renamed.file_type, ".md");
-        assert!(renamed.storage_path.starts_with("notes/markdown/"));
+        assert!(renamed.storage_path.contains("/notes/markdown/"));
 
         assert!(!old_abs.exists());
         let new_abs = manager.resolve_storage_path(&renamed.storage_path);
@@ -1651,7 +1990,7 @@ mod tests {
         ));
 
         // 4. Target already exists on disk
-        let target_path = DbManager::compute_storage_path(&thread.id, &file.id, "existing.md", ".md", false);
+        let target_path = DbManager::compute_storage_path(&thread.subject_id, &thread.id, &file.id, "existing.md", ".md", false);
         let abs_target = manager.resolve_storage_path(&target_path);
         if let Some(p) = abs_target.parent() {
             std::fs::create_dir_all(p).unwrap();
@@ -1674,4 +2013,294 @@ mod tests {
         // Cleanup
         let _ = std::fs::remove_dir_all(temp_dir);
     }
+
+    #[test]
+    fn test_user_creation_and_login_with_password() {
+        let temp_dir = std::env::temp_dir().join(format!("noteman_test_user_{}", Uuid::new_v4()));
+        let manager = DbManager::new_in_memory(temp_dir.clone()).expect("init db");
+
+        // 1. Create user with password
+        let user = manager
+            .create_user(CreateUserInput {
+                id: None,
+                username: "tung_le".to_string(),
+                email: Some("tung.ls110106@gmail.com".to_string()),
+                password: Some("my_secret_pass_123".to_string()),
+            })
+            .expect("create user");
+
+        assert_eq!(user.username, "tung_le");
+        assert_eq!(user.email, Some("tung.ls110106@gmail.com".to_string()));
+        assert_eq!(user.id, user.user_id);
+        assert_eq!(user.id, user.userid);
+        assert!(user.salt.is_some());
+        assert!(user.hashed_password.is_some());
+
+        // Verify salt & pepper hash
+        let salt = user.salt.as_ref().unwrap();
+        let pepper = DbManager::get_pepper();
+        let expected_hash = DbManager::hash_password_with_salt_and_pepper("my_secret_pass_123", salt, &pepper);
+        assert_eq!(user.hashed_password.as_ref().unwrap(), &expected_hash);
+
+        // 2. Login with wrong password -> fails
+        let err_wrong = manager.login("tung_le", Some("wrong_password"));
+        assert!(matches!(err_wrong, Err(DbError::Validation(_))));
+
+        // 3. Login with empty/missing password -> fails
+        let err_empty = manager.login("tung_le", None);
+        assert!(matches!(err_empty, Err(DbError::Validation(_))));
+
+        // 4. Login with correct password -> succeeds and sets current user
+        let logged_in = manager.login("tung_le", Some("my_secret_pass_123")).expect("login");
+        assert_eq!(logged_in.id, user.id);
+
+        let current = manager.get_current_user().expect("get current user").expect("some user");
+        assert_eq!(current.id, user.id);
+
+        // 5. Query user by ID or email
+        let by_email = manager.get_user("tung.ls110106@gmail.com").expect("by email");
+        assert_eq!(by_email.id, user.id);
+
+        let by_id = manager.get_user(&user.id).expect("by id");
+        assert_eq!(by_id.username, "tung_le");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_user_creation_and_login_without_password() {
+        let temp_dir = std::env::temp_dir().join(format!("noteman_test_nopw_{}", Uuid::new_v4()));
+        let manager = DbManager::new_in_memory(temp_dir.clone()).expect("init db");
+
+        // User leaves password blank: "if the user leave it blank when they first create it, ignore it"
+        let user = manager
+            .create_user(CreateUserInput {
+                id: None,
+                username: "student_nopassword".to_string(),
+                email: None,
+                password: None,
+            })
+            .expect("create user");
+
+        assert_eq!(user.username, "student_nopassword");
+        assert!(user.hashed_password.is_none());
+        assert!(user.salt.is_none());
+
+        // They don't have to use passwords to login to that working space
+        let logged_in_no_arg = manager.login("student_nopassword", None).expect("login without password arg");
+        assert_eq!(logged_in_no_arg.id, user.id);
+
+        let logged_in_blank_str = manager.login("student_nopassword", Some("")).expect("login with empty string");
+        assert_eq!(logged_in_blank_str.id, user.id);
+
+        let current = manager.get_current_user().expect("current user").expect("some user");
+        assert_eq!(current.id, user.id);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_user_materials_partitioning_and_storage_routing() {
+        let temp_dir = std::env::temp_dir().join(format!("noteman_test_part_{}", Uuid::new_v4()));
+        let manager = DbManager::new_in_memory(temp_dir.clone()).expect("init db");
+
+        // 1. Setup subject & thread
+        manager
+            .create_subject(CreateSubjectInput {
+                id: "CS101".to_string(),
+                name: "Intro to CS".to_string(),
+                semester: "20261".to_string(),
+            })
+            .unwrap();
+
+        manager
+            .create_thread(CreateThreadInput {
+                id: Some("thread-cs".to_string()),
+                subject_id: "CS101".to_string(),
+                title: "Lesson 1".to_string(),
+                description: None,
+                created_at: None,
+            })
+            .unwrap();
+
+        // 2. Create and login user A
+        let _user_a = manager
+            .create_user(CreateUserInput {
+                id: Some("user-a-uuid".to_string()),
+                username: "user_a".to_string(),
+                email: Some("a@test.com".to_string()),
+                password: None,
+            })
+            .unwrap();
+
+        manager.login("user_a", None).unwrap();
+
+        // 3. Save material (PDF) as user A -> routes into users/{user_id}/courses/{subject_id}/{thread_id}/materials/pdf/
+        let material_a = manager
+            .save_file("thread-cs", "syllabus.pdf", ".pdf", true, b"%PDF-1.4 sample")
+            .expect("save material");
+
+        assert_eq!(material_a.user_id, Some("user-a-uuid".to_string()));
+        assert!(
+            material_a.storage_path.starts_with("users/user-a-uuid/courses/CS101/thread-cs/materials/pdf/"),
+            "Expected user_id path, got: {}",
+            material_a.storage_path
+        );
+        let abs_a = manager.resolve_storage_path(&material_a.storage_path);
+        assert!(abs_a.exists());
+
+        // 4. Save user note (Markdown) as user A -> routes into users/{user_id}/courses/{subject_id}/{thread_id}/notes/markdown/
+        let note_a = manager
+            .save_file("thread-cs", "lecture.md", ".md", false, b"# Note content")
+            .expect("save note");
+
+        assert_eq!(note_a.user_id, Some("user-a-uuid".to_string()));
+        assert!(
+            note_a.storage_path.starts_with("users/user-a-uuid/courses/CS101/thread-cs/notes/markdown/"),
+            "Expected user_id notes path, got: {}",
+            note_a.storage_path
+        );
+        assert!(manager.resolve_storage_path(&note_a.storage_path).exists());
+
+        // 5. Create user B, switch user, and import a file
+        let _user_b = manager
+            .create_user(CreateUserInput {
+                id: Some("user-b-uuid".to_string()),
+                username: "user_b".to_string(),
+                email: Some("b@test.com".to_string()),
+                password: None,
+            })
+            .unwrap();
+
+        manager.login("user_b", None).unwrap();
+
+        let external_file = temp_dir.join("lab.zip");
+        std::fs::write(&external_file, b"PK lab files").unwrap();
+
+        let material_b = manager
+            .import_file("thread-cs", external_file.to_str().unwrap(), "lab.zip", ".zip", true)
+            .expect("import material B");
+
+        assert_eq!(material_b.user_id, Some("user-b-uuid".to_string()));
+        assert!(
+            material_b.storage_path.starts_with("users/user-b-uuid/courses/CS101/thread-cs/materials/archives/"),
+            "Expected user B path, got: {}",
+            material_b.storage_path
+        );
+        assert!(manager.resolve_storage_path(&material_b.storage_path).exists());
+
+        // 6. Test rename_file preserves user directory
+        let renamed_a = manager
+            .rename_file(&material_a.id, "renamed_syllabus.pdf")
+            .expect("rename material");
+        assert_eq!(renamed_a.user_id, Some("user-a-uuid".to_string()));
+        assert!(renamed_a.storage_path.starts_with("users/user-a-uuid/courses/CS101/thread-cs/materials/pdf/"));
+        assert!(manager.resolve_storage_path(&renamed_a.storage_path).exists());
+        assert!(!abs_a.exists());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_user_logout_and_deletion() {
+        let temp_dir = std::env::temp_dir().join(format!("noteman_test_deluser_{}", Uuid::new_v4()));
+        let manager = DbManager::new_in_memory(temp_dir.clone()).expect("init db");
+
+        let user = manager
+            .create_user(CreateUserInput {
+                id: None,
+                username: "deleteme".to_string(),
+                email: None,
+                password: None,
+            })
+            .unwrap();
+
+        manager.login("deleteme", None).unwrap();
+        assert!(manager.get_current_user().unwrap().is_some());
+
+        // Logout
+        manager.logout().unwrap();
+        assert!(manager.get_current_user().unwrap().is_none());
+
+        // Login again and delete
+        manager.login("deleteme", None).unwrap();
+        manager.delete_user(&user.id).unwrap();
+
+        assert!(manager.get_current_user().unwrap().is_none());
+        assert!(manager.get_user(&user.id).is_err());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_course_session_deletion_and_cleanup() {
+        let temp_dir = std::env::temp_dir().join(format!("noteman_test_clean_{}", Uuid::new_v4()));
+        let manager = DbManager::new_in_memory(temp_dir.clone()).expect("init db");
+
+        // 1. Create user, subject, and thread
+        let user = manager
+            .create_user(CreateUserInput {
+                id: Some("usr_clean_1".to_string()),
+                username: "clean_user".to_string(),
+                email: None,
+                password: None,
+            })
+            .unwrap();
+
+        manager.login("clean_user", None).unwrap();
+
+        manager
+            .create_subject(CreateSubjectInput {
+                id: "SUBJ_CLEAN".to_string(),
+                name: "Clean Course".to_string(),
+                semester: "20261".to_string(),
+            })
+            .unwrap();
+
+        let thread = manager
+            .create_thread(CreateThreadInput {
+                id: Some("thread_clean_1".to_string()),
+                subject_id: "SUBJ_CLEAN".to_string(),
+                title: "Clean Session".to_string(),
+                description: None,
+                created_at: None,
+            })
+            .unwrap();
+
+        // 2. Save note and material
+        let file_note = manager
+            .save_file(&thread.id, "clean_note.md", ".md", false, b"# Clean Note")
+            .unwrap();
+        let file_mat = manager
+            .save_file(&thread.id, "clean_slide.pdf", ".pdf", true, b"%PDF clean slide")
+            .unwrap();
+
+        let abs_note = manager.resolve_storage_path(&file_note.storage_path);
+        let abs_mat = manager.resolve_storage_path(&file_mat.storage_path);
+        assert!(abs_note.exists());
+        assert!(abs_mat.exists());
+
+        let thread_dir = temp_dir.join("users").join(&user.id).join("courses").join("SUBJ_CLEAN").join(&thread.id);
+        assert!(thread_dir.exists());
+
+        // 3. Delete thread with clean_files = true
+        manager.delete_thread(&thread.id, true).unwrap();
+
+        assert!(!abs_note.exists());
+        assert!(!abs_mat.exists());
+        assert!(!thread_dir.exists());
+
+        // 4. Delete subject with clean_files = true
+        manager.delete_subject("SUBJ_CLEAN", true).unwrap();
+        let course_dir = temp_dir.join("users").join(&user.id).join("courses").join("SUBJ_CLEAN");
+        assert!(!course_dir.exists());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
 }
+

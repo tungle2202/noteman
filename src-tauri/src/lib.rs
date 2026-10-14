@@ -59,6 +59,13 @@ pub fn run() {
             db::db_get_schema_version,
             db::db_get_applied_migrations,
             db::db_purge_trash,
+            db::db_create_user,
+            db::db_login,
+            db::db_logout,
+            db::db_get_current_user,
+            db::db_get_users,
+            db::db_get_user,
+            db::db_delete_user,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
