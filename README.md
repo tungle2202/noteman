@@ -16,11 +16,13 @@
 
 ## Install
 
-Visit the [release](https://github.com/tungle2202/noteman/release) tab to install prebuild binary package or install wizard
+Visit the [release](https://github.com/tungle2202/noteman/releases) tab
+to install prebuild binary package or install wizard
 
 ## Prerequisites
 
-To build Noteman from source, install the core development toolchains and platform-specific dependencies for your operating system.
+To build Noteman from source, install the core development toolchains and
+platform-specific dependencies for your operating system.
 
 ### 1. Core Toolchains (All Platforms)
 
