@@ -383,13 +383,14 @@ hr,
   transition: all var(--transition-fast);
 }
 
+
 @supports (appearance: base-select) {
   select,
-  select::picker(select){
+  select::picker(select) {
     appearance: base-select;
   }
 
-  select::picker(select){
+  select::picker(select) {
     background: var(--bg-surface-2);
     border: 1px solid var(--border-medium);
     border-radius: var(--radius-md);
@@ -404,18 +405,19 @@ hr,
 
   select option {
     background: var(--bg-surface-2);
+    color: var(--text-primary);
+    font: inherit;
     font-size: 14px;
     font-weight: 500;
-    font: inherit;
-
-    border-radius : calc(var(--radius-md) - 2px);
+    margin-bottom: 2px;
+    margin-top: 2px;
+    border-radius: calc(var(--radius-md) - 2px);
   }
 
   select option:hover {
     background: var(--bg-surface-3);
   }
 }
-
 .select:hover {
   border-color: var(--border-interactive);
   background: var(--bg-surface-3);
