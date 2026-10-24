@@ -371,6 +371,7 @@ hr,
 }
 
 .select {
+  appearance: none;
   background: var(--bg-surface-2);
   border: 1px solid var(--border-medium);
   border-radius: var(--radius-md);
@@ -380,6 +381,39 @@ hr,
   font-weight: 500;
   cursor: pointer;
   transition: all var(--transition-fast);
+}
+
+@supports (appearance: base-select) {
+  select,
+  select::picker(select){
+    appearance: base-select;
+  }
+
+  select::picker(select){
+    background: var(--bg-surface-2);
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font: inherit;
+    cursor: pointer;
+
+    position-area: top span-all;
+    padding: 2px;
+    margin-bottom: 4px;
+  }
+
+  select option {
+    background: var(--bg-surface-2);
+    font-size: 14px;
+    font-weight: 500;
+    font: inherit;
+
+    border-radius : calc(var(--radius-md) - 2px);
+  }
+
+  select option:hover {
+    background: var(--bg-surface-3);
+  }
 }
 
 .select:hover {
