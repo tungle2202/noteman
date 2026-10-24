@@ -23,8 +23,8 @@ to install prebuild binary package or install wizard
 
 ## Prerequisites
 
-To build Noteman from source, install the core development toolchains and
-platform-specific dependencies for your operating system.
+To build Noteman from source, install the [core development toolchains](#1-core-toolchains-all-platforms) and
+[platform-specific dependencies](#2-platform-dependencies) for your operating system.
 
 ### 1. Core Toolchains (All Platforms)
 
@@ -41,14 +41,41 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ### 2. Platform Dependencies
 
 <details open>
-<summary><b>linux</b></summary>
+<summary><b>Linux</b></summary>
 
-Linux requires GTK 3, WebKitGTK 4.1, and C build tools to compile:
+Linux requires GTK, WebKitGTK, and C build tools to compile Noteman.
 
-#### Debian Family (`apt`)
+**Recommended backend:** GTK 4 + WebKitGTK 6.0 for modern WebKit features and
+improved native integration.
+
+**Compatibility backend:** GTK 3 + WebKit2GTK 4.1 is also supported where
+required by the application or its dependencies. Some features may behave
+differently depending on the WebKitGTK version.
+
+#### Debian / Ubuntu (`apt`)
+
+**Recommended: GTK 4 + WebKitGTK 6.0**
 
 ```zsh
-sudo apt update && sudo apt install -y \
+sudo apt update
+sudo apt install -y \
+    build-essential \
+    curl \
+    wget \
+    file \
+    pkg-config \
+    libssl-dev \
+    libgtk-4-dev \
+    libwebkitgtk-6.0-dev \
+    libayatana-appindicator3-dev \
+    librsvg2-dev
+```
+
+**Alternative: GTK 3 + WebKit2GTK 4.1**
+
+```zsh
+sudo apt update
+sudo apt install -y \
     build-essential \
     curl \
     wget \
@@ -61,13 +88,32 @@ sudo apt update && sudo apt install -y \
     librsvg2-dev
 ```
 
-#### Arch Linux Family (`pacman`)
+#### Arch Linux (`pacman`)
+
+**Recommended: GTK 4 + WebKitGTK 6.0**
 
 ```zsh
 sudo pacman -Syu --needed \
     base-devel \
     curl \
     wget \
+    file \
+    pkgconf \
+    openssl \
+    gtk4 \
+    webkitgtk-6.0 \
+    libayatana-appindicator \
+    librsvg
+```
+
+**Alternative: GTK 3 + WebKit2GTK 4.1**
+
+```zsh
+sudo pacman -Syu --needed \
+    base-devel \
+    curl \
+    wget \
+    file \
     pkgconf \
     openssl \
     gtk3 \
@@ -76,13 +122,32 @@ sudo pacman -Syu --needed \
     librsvg
 ```
 
-#### Red Hat Family (`dnf`)
+#### Fedora / Red Hat (`dnf`)
+
+**Recommended: GTK 4 + WebKitGTK 6.0**
 
 ```zsh
-sudo dnf groupinstall -y "Development Tools"
+sudo dnf group install -y "Development Tools"
 sudo dnf install -y \
     curl \
     wget \
+    file \
+    pkgconf-pkg-config \
+    openssl-devel \
+    gtk4-devel \
+    webkitgtk6.0-devel \
+    libayatana-appindicator-gtk3-devel \
+    librsvg2-devel
+```
+
+**Alternative: GTK 3 + WebKit2GTK 4.1**
+
+```zsh
+sudo dnf group install -y "Development Tools"
+sudo dnf install -y \
+    curl \
+    wget \
+    file \
     pkgconf-pkg-config \
     openssl-devel \
     gtk3-devel \
@@ -91,20 +156,24 @@ sudo dnf install -y \
     librsvg2-devel
 ```
 
+**Note:** Package availability depends on the distribution release, enabled repositories, and CPU architecture. Verify that the required development packages are available before building.
+
+GTK 3 remains a compatibility option. GTK 4 + WebKitGTK 6.0 is preferred for modern WebKit features, provided the selected Tauri backend and its dependencies support it.
+
 </details>
 
 <details>
 <summary><b>macOS</b></summary>
 
-macOS uses built-in Apple WebKit (`WKWebView`) and does not require GTK or external webview libraries.
+macOS uses Apple's native WebKit through `WKWebView`. GTK and WebKitGTK are not required.
 
-1. **Install Apple Command Line Tools** (Clang, Make, Git, Apple SDKs):
+1. **Install Apple Command Line Tools** (Clang, Make, Git, and Apple SDKs):
 
    ```zsh
    xcode-select --install
    ```
 
-2. **Install Node.js** (via [Homebrew](https://brew.sh/)):
+2. **Install Node.js** using [Homebrew](https://brew.sh/):
 
    ```zsh
    brew install node
@@ -115,11 +184,12 @@ macOS uses built-in Apple WebKit (`WKWebView`) and does not require GTK or exter
 <details>
 <summary><b>Windows</b></summary>
 
-- [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (select "Desktop development with C++").
-- [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (pre-installed on Windows 11).
+Windows uses Microsoft WebView2 for the native webview.
+
+- **Microsoft C++ Build Tools:** Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) and select **Desktop development with C++**.
+- **WebView2 Runtime:** Install the [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) if it is not already available.
 
 </details>
-
 ---
 
 ## Build guide
