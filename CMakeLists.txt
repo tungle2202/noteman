@@ -11,7 +11,16 @@ target_include_directories(sqlite3 PUBLIC third_party/sqlite/)
 find_package(Threads REQUIRED)
 target_link_libraries(sqlite3 PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
 
+# Database layer
+
+add_library(noteman_db STATIC
+    src/database/database.cpp
+    src/database/migrations.cpp
+)
+target_include_directories(noteman_db PUBLIC src/database/)
+target_link_libraries(noteman_db PUBLIC sqlite3)
+
 # App
 
 add_executable(my_app src/main.cpp)
-target_link_libraries(my_app PRIVATE sqlite3)
+target_link_libraries(my_app PRIVATE noteman_db)
