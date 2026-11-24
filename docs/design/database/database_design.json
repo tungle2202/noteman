@@ -96,7 +96,9 @@
       "indexes": [
         {
           "name": "idx_threads_subject_id",
-          "columns": ["subject_id"]
+          "columns": [
+            "subject_id"
+          ]
         }
       ]
     },
@@ -176,11 +178,15 @@
       "indexes": [
         {
           "name": "idx_files_thread_id",
-          "columns": ["thread_id"]
+          "columns": [
+            "thread_id"
+          ]
         },
         {
           "name": "idx_files_user_id",
-          "columns": ["user_id"]
+          "columns": [
+            "user_id"
+          ]
         }
       ]
     },
@@ -228,7 +234,9 @@
       "indexes": [
         {
           "name": "idx_tasks_thread_id",
-          "columns": ["thread_id"]
+          "columns": [
+            "thread_id"
+          ]
         }
       ]
     },
@@ -301,11 +309,15 @@
       "indexes": [
         {
           "name": "idx_users_username",
-          "columns": ["username"]
+          "columns": [
+            "username"
+          ]
         },
         {
           "name": "idx_users_email",
-          "columns": ["email"]
+          "columns": [
+            "email"
+          ]
         }
       ]
     },
@@ -350,4 +362,3 @@
     ]
   }
 }
-
