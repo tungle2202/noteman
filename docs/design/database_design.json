@@ -1,0 +1,353 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Noteman Database Design",
+  "description": "Relational SQLite database schema for Noteman local-first note management.",
+  "database": {
+    "filename": "noteman.db",
+    "engine": "SQLite 3",
+    "pragmas": {
+      "foreign_keys": "ON",
+      "journal_mode": "WAL",
+      "synchronous": "NORMAL"
+    }
+  },
+  "tables": {
+    "subjects": {
+      "name": "subjects",
+      "description": "Academic subjects or courses enrolled by the user.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT",
+          "primary_key": true,
+          "nullable": false,
+          "description": "Unique subject identifier / course code.",
+          "example": "IT3080"
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Human-readable subject name.",
+          "example": "Mạng máy tính"
+        },
+        {
+          "name": "semester",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Academic semester code.",
+          "example": "20261"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "threads": {
+      "name": "threads",
+      "description": "Study threads or lesson topics under a specific subject.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT",
+          "primary_key": true,
+          "nullable": false,
+          "description": "Unique thread identifier (UUID v4 or custom string)."
+        },
+        {
+          "name": "subject_id",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Foreign key referencing subjects(id)."
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Thread or lesson topic title.",
+          "example": "Buổi 2: Rust và Tauri"
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": true,
+          "description": "Short summary or description about the lesson covered in this thread."
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "ISO 8601 timestamp string representing when the thread was created."
+        }
+      ],
+      "foreign_keys": [
+        {
+          "column": "subject_id",
+          "references_table": "subjects",
+          "references_column": "id",
+          "on_delete": "CASCADE"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_threads_subject_id",
+          "columns": ["subject_id"]
+        }
+      ]
+    },
+    "files": {
+      "name": "files",
+      "description": "Metadata for files managed by Noteman (user notes and imported materials).",
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT",
+          "primary_key": true,
+          "nullable": false,
+          "description": "Unique file identifier (UUID v4)."
+        },
+        {
+          "name": "thread_id",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Foreign key referencing threads(id)."
+        },
+        {
+          "name": "file_name",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Original file name with extension.",
+          "example": "buoi2_notes.md"
+        },
+        {
+          "name": "file_type",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "File extension or type category.",
+          "example": ".md, .tex, .pdf"
+        },
+        {
+          "name": "storage_path",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Relative directory path where the file is physically stored inside the application directory (users/{user_id}/courses/{subject_id}/{thread_id}/[notes|materials|media]/{category}/{file_id}_{file_name}).",
+          "example": "users/usr_4a8f9c/courses/IT3080/8fa9b3c4-1234/notes/markdown/550e8400-e29b-41d4-a716-446655440000_buoi2_notes.md"
+        },
+        {
+          "name": "is_material",
+          "type": "INTEGER",
+          "primary_key": false,
+          "nullable": false,
+          "default": 0,
+          "check": "is_material IN (0, 1)",
+          "description": "Boolean flag: 1 if the file is imported course material, 0 if it is a user note/document."
+        },
+        {
+          "name": "user_id",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": true,
+          "description": "Foreign key referencing users(id) for user isolation. Nullable for unassigned files."
+        }
+      ],
+      "foreign_keys": [
+        {
+          "column": "thread_id",
+          "references_table": "threads",
+          "references_column": "id",
+          "on_delete": "CASCADE"
+        },
+        {
+          "column": "user_id",
+          "references_table": "users",
+          "references_column": "id",
+          "on_delete": "SET NULL"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_files_thread_id",
+          "columns": ["thread_id"]
+        },
+        {
+          "name": "idx_files_user_id",
+          "columns": ["user_id"]
+        }
+      ]
+    },
+    "tasks": {
+      "name": "tasks",
+      "description": "Actionable tasks and homework deadlines linked to study threads.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT",
+          "primary_key": true,
+          "nullable": false,
+          "description": "Unique task identifier (UUID v4)."
+        },
+        {
+          "name": "thread_id",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Foreign key referencing threads(id)."
+        },
+        {
+          "name": "title",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Title or summary of the task."
+        },
+        {
+          "name": "deadline",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": true,
+          "description": "Target completion timestamp (ISO 8601 string or date format)."
+        }
+      ],
+      "foreign_keys": [
+        {
+          "column": "thread_id",
+          "references_table": "threads",
+          "references_column": "id",
+          "on_delete": "CASCADE"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_tasks_thread_id",
+          "columns": ["thread_id"]
+        }
+      ]
+    },
+    "users": {
+      "name": "users",
+      "description": "User accounts and workspace identities with optional password authentication (salt and pepper).",
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT",
+          "primary_key": true,
+          "nullable": false,
+          "description": "Unique user identifier (UUID v4)."
+        },
+        {
+          "name": "user_id",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Generated virtual alias column matching id."
+        },
+        {
+          "name": "userid",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Generated virtual alias column matching id."
+        },
+        {
+          "name": "username",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "unique": true,
+          "description": "Unique login username or handle.",
+          "example": "tung_le"
+        },
+        {
+          "name": "email",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": true,
+          "unique": true,
+          "description": "User email address.",
+          "example": "tung.ls110106@gmail.com"
+        },
+        {
+          "name": "hashed_password",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": true,
+          "description": "SHA-256 password hash computed with salt and application pepper. Null if password left blank."
+        },
+        {
+          "name": "salt",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": true,
+          "description": "Per-user cryptographically random salt string. Null if password left blank."
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "ISO 8601 timestamp string representing when the user account was created."
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_users_username",
+          "columns": ["username"]
+        },
+        {
+          "name": "idx_users_email",
+          "columns": ["email"]
+        }
+      ]
+    },
+    "_migrations": {
+      "name": "_migrations",
+      "description": "Internal audit log of sequentially applied schema migrations.",
+      "columns": [
+        {
+          "name": "version",
+          "type": "INTEGER",
+          "primary_key": true,
+          "nullable": false,
+          "description": "Sequential migration version number matching PRAGMA user_version."
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "Human-readable migration identifier.",
+          "example": "001_initial_schema"
+        },
+        {
+          "name": "applied_at",
+          "type": "TEXT",
+          "primary_key": false,
+          "nullable": false,
+          "description": "ISO 8601 timestamp string representing when the migration was committed."
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": []
+    }
+  },
+  "migration_strategy": {
+    "version_tracking": "PRAGMA user_version (integer) + _migrations audit log table.",
+    "current_schema_version": 2,
+    "principles": [
+      "Migrations are strictly forward-only and version-numbered sequentially (1, 2, 3...).",
+      "Each migration runs in an isolated SQLite transaction that executes DDL, logs into _migrations, and updates PRAGMA user_version atomically.",
+      "Schema changes MUST be appended to MIGRATIONS in migrations.rs without altering historic migrations."
+    ]
+  }
+}
+

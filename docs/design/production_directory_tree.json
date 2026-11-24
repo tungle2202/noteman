@@ -1,0 +1,241 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Noteman Production Directory Tree & Storage Architecture",
+  "description": "Defines the production filesystem hierarchy and file placement rules inspired by Linux Package Managers (FHS / XDG) and multi-user isolation. Files are strictly organized by user workspace, course (subject), and session (thread), then sub-divided into notes, materials, and media categories to maintain referential integrity and mirror the UI navigation flow.",
+  "root_base_directory": {
+    "linux": "~/.local/share/com.tungle2202.noteman/",
+    "windows": "%LOCALAPPDATA%\\com.tungle2202.noteman\\",
+    "macos": "~/Library/Application Support/com.tungle2202.noteman/",
+    "env_variable": "XDG_DATA_HOME/com.tungle2202.noteman/"
+  },
+  "directory_tree": {
+    "db/": {
+      "purpose": "State and relational metadata storage (analogous to /var/lib in Linux).",
+      "lifecycle": "Persistent, critical",
+      "allowed_extensions": [".db", ".db-wal", ".db-shm"],
+      "contents": {
+        "noteman.db": "Active SQLite database storing subjects, threads, files, tasks, users, and migration indexes.",
+        "noteman.db-wal": "SQLite write-ahead log for high concurrency and atomic commits.",
+        "noteman.db-shm": "SQLite shared memory index for WAL.",
+        "backups/": {
+          "purpose": "Automatic and manual database snapshots / backups.",
+          "naming_convention": "noteman_backup_{YYYYMMDD_HHMMSS}.db",
+          "allowed_extensions": [".db"]
+        }
+      }
+    },
+    "users/": {
+      "purpose": "User-partitioned local workspaces. Each user account isolates its courses, sessions, notes, materials, and media in its own directory tree.",
+      "lifecycle": "Persistent, primary user content",
+      "subdirectories": {
+        "{user_id}/": {
+          "purpose": "Dedicated workspace root for a specific user (or 'default' for unassigned / legacy files).",
+          "subdirectories": {
+            "courses/": {
+              "purpose": "Academic courses/subjects enrolled by this user.",
+              "subdirectories": {
+                "{subject_id}/": {
+                  "purpose": "Specific course directory containing all lesson threads / sessions.",
+                  "subdirectories": {
+                    "{thread_id}/": {
+                      "purpose": "Study session / lesson thread directory containing notes, course materials, and linked media.",
+                      "subdirectories": {
+                        "notes/": {
+                          "purpose": "User-authored notes and source documents created via embedded editors (is_material = 0).",
+                          "lifecycle": "Persistent, user primary content",
+                          "subdirectories": {
+                            "markdown/": {
+                              "purpose": "Dedicated storage for Markdown notes and outlines.",
+                              "allowed_extensions": [".md", ".markdown"],
+                              "path_pattern": "users/{user_id}/courses/{subject_id}/{thread_id}/notes/markdown/{file_id}_{file_name}",
+                              "example": "users/usr_4a8f9c/courses/IT3080/8fa9b3c4-1234/notes/markdown/550e8400-e29b-41d4-a716-446655440000_buoi2_rust_basics.md"
+                            },
+                            "latex/": {
+                              "purpose": "Dedicated storage for LaTeX source files, math documents, and bibliography files.",
+                              "allowed_extensions": [".tex", ".bib", ".sty", ".cls"],
+                              "path_pattern": "users/{user_id}/courses/{subject_id}/{thread_id}/notes/latex/{file_id}_{file_name}",
+                              "example": "users/usr_4a8f9c/courses/IT3080/8fa9b3c4-1234/notes/latex/550e8400-e29b-41d4-a716-446655440000_calculus_assignment.tex"
+                            },
+                            "misc/": {
+                              "purpose": "Plain text notes, snippets, or code snippets authored by the user.",
+                              "allowed_extensions": [".txt", ".rs", ".py", ".cpp", ".c", ".js"],
+                              "path_pattern": "users/{user_id}/courses/{subject_id}/{thread_id}/notes/misc/{file_id}_{file_name}",
+                              "example": "users/usr_4a8f9c/courses/IT3080/8fa9b3c4-1234/notes/misc/550e8400-e29b-41d4-a716-446655440000_snippet.rs"
+                            }
+                          }
+                        },
+                        "materials/": {
+                          "purpose": "Imported academic course materials, external documents, and references (is_material = 1).",
+                          "lifecycle": "Persistent, imported resources",
+                          "subdirectories": {
+                            "pdf/": {
+                              "purpose": "Course textbooks, lecture slide PDFs, syllabus, and examination papers.",
+                              "allowed_extensions": [".pdf"],
+                              "path_pattern": "users/{user_id}/courses/{subject_id}/{thread_id}/materials/pdf/{file_id}_{file_name}",
+                              "example": "users/usr_4a8f9c/courses/IT3080/8fa9b3c4-1234/materials/pdf/550e8400-e29b-41d4-a716-446655440000_chuong1_tong_quan.pdf"
+                            },
+                            "slides/": {
+                              "purpose": "Presentation slide files.",
+                              "allowed_extensions": [".pptx", ".ppt", ".odp", ".key"],
+                              "path_pattern": "users/{user_id}/courses/{subject_id}/{thread_id}/materials/slides/{file_id}_{file_name}",
+                              "example": "users/usr_4a8f9c/courses/IT3080/8fa9b3c4-1234/materials/slides/550e8400-e29b-41d4-a716-446655440000_presentation_networking.pptx"
+                            },
+                            "docs/": {
+                              "purpose": "External office documents and reference specifications.",
+                              "allowed_extensions": [".docx", ".doc", ".odt", ".rtf"],
+                              "path_pattern": "users/{user_id}/courses/{subject_id}/{thread_id}/materials/docs/{file_id}_{file_name}",
+                              "example": "users/usr_4a8f9c/courses/IT3080/8fa9b3c4-1234/materials/docs/550e8400-e29b-41d4-a716-446655440000_de_cuong_mon_hoc.docx"
+                            },
+                            "archives/": {
+                              "purpose": "Compressed code packages, dataset archives, and lab source archives.",
+                              "allowed_extensions": [".zip", ".tar.gz", ".tar.xz", ".7z", ".rar"],
+                              "path_pattern": "users/{user_id}/courses/{subject_id}/{thread_id}/materials/archives/{file_id}_{file_name}",
+                              "example": "users/usr_4a8f9c/courses/IT3080/8fa9b3c4-1234/materials/archives/550e8400-e29b-41d4-a716-446655440000_lab1_starter_code.zip"
+                            }
+                          }
+                        },
+                        "media/": {
+                          "purpose": "Embedded multimedia assets referenced within notes (images, graphs, audio).",
+                          "lifecycle": "Persistent, linked assets",
+                          "subdirectories": {
+                            "images/": {
+                              "purpose": "Diagrams, screenshots, whiteboard captures, and figures embedded in Markdown or LaTeX.",
+                              "allowed_extensions": [".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"],
+                              "path_pattern": "users/{user_id}/courses/{subject_id}/{thread_id}/media/images/{file_id}_{file_name}",
+                              "example": "users/usr_4a8f9c/courses/IT3080/8fa9b3c4-1234/media/images/550e8400-e29b-41d4-a716-446655440000_osi_7_layers_diagram.png"
+                            },
+                            "audio/": {
+                              "purpose": "Lecture voice recordings or audio explanations.",
+                              "allowed_extensions": [".mp3", ".wav", ".m4a", ".ogg", ".aac"],
+                              "path_pattern": "users/{user_id}/courses/{subject_id}/{thread_id}/media/audio/{file_id}_{file_name}",
+                              "example": "users/usr_4a8f9c/courses/IT3080/8fa9b3c4-1234/media/audio/550e8400-e29b-41d4-a716-446655440000_lecture_recording_part1.mp3"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "cache/": {
+      "purpose": "Ephemeral build artifacts, math formula rendering cache, and staged exports (analogous to /var/cache).",
+      "lifecycle": "Ephemeral, purgeable without loss of persistent data",
+      "subdirectories": {
+        "katex/": {
+          "purpose": "Cached rendered KaTeX math expressions / SVG glyph cache for fast editor previews.",
+          "allowed_extensions": [".svg", ".json", ".cache"]
+        },
+        "previews/": {
+          "purpose": "Generated thumbnail previews and rendered page representations of PDFs and LaTeX docs.",
+          "allowed_extensions": [".png", ".webp"]
+        },
+        "latex_builds/": {
+          "purpose": "Intermediate compilation artifacts (.aux, .log, .out, .toc, .synctex) produced by tectonic/pdflatex engines.",
+          "allowed_extensions": [".aux", ".log", ".out", ".toc", ".synctex.gz"]
+        },
+        "exports/": {
+          "purpose": "Staged exports (HTML / PDF) generated on demand before the user saves them to an external location.",
+          "allowed_extensions": [".pdf", ".html"]
+        },
+        "trash/": {
+          "purpose": "Staging directory for two-phase atomic file deletions. Files are moved here during SQLite transactions before final purge.",
+          "allowed_extensions": ["*"]
+        }
+      }
+    },
+    "config/": {
+      "purpose": "User configurations, editor presets, and customizable templates (analogous to /etc).",
+      "lifecycle": "Persistent configuration",
+      "subdirectories": {
+        "settings.json": "App preferences (theme, font, KaTeX macros, auto-save interval, default semester).",
+        "templates/markdown/": {
+          "purpose": "Starter Markdown templates for lectures, lab reports, and revision summaries.",
+          "allowed_extensions": [".md"]
+        },
+        "templates/latex/": {
+          "purpose": "Starter LaTeX templates for homework submissions, research papers, and cheat sheets.",
+          "allowed_extensions": [".tex"]
+        }
+      }
+    },
+    "logs/": {
+      "purpose": "Diagnostics, runtime logs, crash traces, and database migration audit logs (analogous to /var/log).",
+      "lifecycle": "Rotated, transient",
+      "contents": {
+        "noteman.log": "Primary application log file.",
+        "integrity.log": "Audit trail of database-to-filesystem verification runs."
+      }
+    }
+  },
+  "package_manager_principles": {
+    "strict_type_routing": "Every file imported or authored must be routed to its strictly assigned subdirectory according to its user, course (subject), session (thread), file_type, and is_material flag.",
+    "routing_matrix": [
+      {
+        "category": "Notes - Markdown",
+        "file_type": [".md", ".markdown"],
+        "is_material": false,
+        "target_directory": "users/{user_id}/courses/{subject_id}/{thread_id}/notes/markdown/"
+      },
+      {
+        "category": "Notes - LaTeX",
+        "file_type": [".tex", ".bib", ".sty", ".cls"],
+        "is_material": false,
+        "target_directory": "users/{user_id}/courses/{subject_id}/{thread_id}/notes/latex/"
+      },
+      {
+        "category": "Notes - Misc Text/Code",
+        "file_type": [".txt", ".rs", ".py", ".cpp", ".c", ".js"],
+        "is_material": false,
+        "target_directory": "users/{user_id}/courses/{subject_id}/{thread_id}/notes/misc/"
+      },
+      {
+        "category": "Materials - PDF",
+        "file_type": [".pdf"],
+        "is_material": true,
+        "target_directory": "users/{user_id}/courses/{subject_id}/{thread_id}/materials/pdf/"
+      },
+      {
+        "category": "Materials - Slides",
+        "file_type": [".pptx", ".ppt", ".odp", ".key"],
+        "is_material": true,
+        "target_directory": "users/{user_id}/courses/{subject_id}/{thread_id}/materials/slides/"
+      },
+      {
+        "category": "Materials - Documents",
+        "file_type": [".docx", ".doc", ".odt", ".rtf"],
+        "is_material": true,
+        "target_directory": "users/{user_id}/courses/{subject_id}/{thread_id}/materials/docs/"
+      },
+      {
+        "category": "Materials - Archives",
+        "file_type": [".zip", ".tar.gz", ".tar.xz", ".7z", ".rar"],
+        "is_material": true,
+        "target_directory": "users/{user_id}/courses/{subject_id}/{thread_id}/materials/archives/"
+      },
+      {
+        "category": "Media - Images",
+        "file_type": [".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"],
+        "is_material": "any",
+        "target_directory": "users/{user_id}/courses/{subject_id}/{thread_id}/media/images/"
+      },
+      {
+        "category": "Media - Audio",
+        "file_type": [".mp3", ".wav", ".m4a", ".ogg", ".aac"],
+        "is_material": "any",
+        "target_directory": "users/{user_id}/courses/{subject_id}/{thread_id}/media/audio/"
+      }
+    ],
+    "atomic_file_ops": "Writing the file payload to disk and inserting its metadata into SQLite must be coordinated. If disk write fails, no DB record is created; if DB insert fails, the uncommitted file is cleaned up. Similarly, file renaming (db_rename_file) coordinates physical renaming on disk with database updates within a transaction, reverting the disk rename if the database update fails to prevent discrepancies.",
+    "clean_uninstallation": "Deleting a file, thread, or subject removes both SQLite records and physical files on disk to prevent orphaned files using a two-phase staging strategy.",
+    "two_phase_atomic_deletion": "All file and record deletions must use two-phase staging: (1) Begin SQLite transaction; (2) SELECT storage paths of target files; (3) Stage removal by moving files via atomic rename (std::fs::rename) into cache/trash/{operation_uuid}/ (treating missing files with ErrorKind::NotFound as non-fatal); (4) If any file rename fails, roll back physical staging by restoring moved files and ROLLBACK SQLite transaction; (5) Execute SQL DELETE (letting SQLite cascade child table rows) and COMMIT SQLite transaction; (6) Permanently purge cache/trash/{operation_uuid}/ and clean up empty parent directories up the hierarchy.",
+    "integrity_verification": "The system includes an integrity verification command (verify_files_integrity) like 'pacman -Qk' to check that each database record corresponds to a verified file on disk.",
+    "safe_cache_purge": "The entire cache/ directory can be purged at any time without compromising database consistency or user documents.",
+    "dynamic_id_generation": "All {file_id} or {thread_id} values shown in JSON examples are mock placeholders. When implementing file creation or database inserts, Rust MUST dynamically generate these IDs using the uuid crate (UUID v4) as defined in the database schema. Do not hardcode any example IDs.",
+    "user_partitioned_storage": "To support multi-user local workspaces and mirror the UI navigation hierarchy, all course notes, materials, and media are organized under users/{user_id}/courses/{subject_id}/{thread_id}/[notes|materials|media]/{category}/. When no user is authenticated or specified, files default to users/default/courses/{subject_id}/{thread_id}/... for seamless operation."
+  }
+}
