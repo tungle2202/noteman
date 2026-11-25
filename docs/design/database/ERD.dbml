@@ -71,7 +71,7 @@ Table subjects {
   semester TEXT [not null, note: 'Academic semester code. Example: 20261']
   owner_id TEXT [not null, note: 'Foreign key referencing users(id). Owner permission class.']
   group_id TEXT [not null, note: 'Foreign key referencing groups(id). Group permission class.']
-  mode INTEGER [not null, default: 56, note: '6-bit permission mask (see project note). CHECK (mode BETWEEN 0 AND 63).']
+  mode INTEGER [not null, default: 48, note: '6-bit permission mask (see project note). CHECK (mode BETWEEN 0 AND 63).']
   created_at TEXT [not null, default: `strftime('%Y-%m-%dT%H:%M:%fZ','now')`]
   last_update TEXT [not null, default: `strftime('%Y-%m-%dT%H:%M:%fZ','now')`, note: 'Touched when anything inside the subject changes.']
 
