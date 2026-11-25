@@ -1,133 +1,35 @@
 #pragma once
 
 // Noteman SQLite database layer.
-// Schema source of truth: docs/design/database_design.json
+//
+//   Schema design : docs/design/database/ERD.dbml
+//   Schema DDL    : src/database/sql/migrations/NNN_name.sql (embedded at build time)
+//   DML statements: src/database/sql/queries.hpp
+//
+// The Database methods are implemented per domain:
+//   database.cpp (connection, transactions, migrations), users.cpp, groups.cpp,
+//   subjects.cpp, threads.cpp, materials.cpp, quotes.cpp, reading_progress.cpp,
+//   notes.cpp, tasks.cpp.
 
-#include <cstdint>
-#include <functional>
+#include "database/error.hpp"
+#include "database/models.hpp"
+#include "database/statement.hpp"
+
 #include <optional>
-#include <stdexcept>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 struct sqlite3;
-struct sqlite3_stmt;
 
 namespace noteman::db {
-
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-class DatabaseError : public std::runtime_error {
-public:
-    DatabaseError(const std::string &what, int code)
-        : std::runtime_error(what), code_(code) {}
-    int code() const noexcept { return code_; }
-
-private:
-    int code_;
-};
-
-// ---------------------------------------------------------------------------
-// Row models (one per table)
-// ---------------------------------------------------------------------------
-
-struct Subject {
-    std::string id; // course code, e.g. "IT3080"
-    std::string name;
-    std::string semester; // e.g. "20261"
-};
-
-struct Thread {
-    std::string id; // UUID v4
-    std::string subject_id;
-    std::string title;
-    std::optional<std::string> description;
-    std::string created_at; // ISO 8601
-};
-
-struct File {
-    std::string id; // UUID v4
-    std::string thread_id;
-    std::string file_name;
-    std::string file_type;
-    std::string storage_path;
-    bool is_material = false;
-    std::optional<std::string> user_id;
-};
-
-struct Task {
-    std::string id; // UUID v4
-    std::string thread_id;
-    std::string title;
-    std::optional<std::string> deadline;
-};
-
-struct User {
-    std::string id; // UUID v4
-    std::string username;
-    std::optional<std::string> email;
-    std::optional<std::string> hashed_password;
-    std::optional<std::string> salt;
-    std::string created_at; // ISO 8601
-};
-
-struct Migration {
-    int version;
-    const char *name;
-    const char *sql;
-};
-
-// ---------------------------------------------------------------------------
-// Prepared statement (RAII)
-// ---------------------------------------------------------------------------
-
-class Statement {
-public:
-    Statement(sqlite3 *db, const std::string &sql);
-    ~Statement();
-    Statement(const Statement &) = delete;
-    Statement &operator=(const Statement &) = delete;
-    Statement(Statement &&other) noexcept;
-    Statement &operator=(Statement &&other) noexcept;
-
-    // Bind parameters (1-based index, like sqlite3_bind_*).
-    Statement &bind(int index, const std::string &value);
-    Statement &bind(int index, const char *value);
-    Statement &bind(int index, std::int64_t value);
-    Statement &bind(int index, int value);
-    Statement &bind(int index, bool value);
-    Statement &bind(int index, const std::optional<std::string> &value);
-    Statement &bind_null(int index);
-
-    // Advance; returns true while a row is available.
-    bool step();
-    // Execute a statement that returns no rows.
-    void run();
-    void reset();
-
-    std::string column_text(int col) const;
-    std::optional<std::string> column_optional_text(int col) const;
-    std::int64_t column_int64(int col) const;
-    bool column_is_null(int col) const;
-
-private:
-    void check_bind(int rc);
-
-    sqlite3 *db_ = nullptr;
-    sqlite3_stmt *stmt_ = nullptr;
-};
-
-// ---------------------------------------------------------------------------
-// Database connection
-// ---------------------------------------------------------------------------
 
 class Database {
 public:
     // Opens (creating if needed) the database at `path`, applies the pragmas
-    // from the design (foreign_keys=ON, journal_mode=WAL, synchronous=NORMAL)
-    // and runs all pending migrations. Use ":memory:" for an in-memory DB.
+    // (foreign_keys=ON, journal_mode=WAL, synchronous=NORMAL) and runs all
+    // pending migrations. Use ":memory:" for an in-memory database.
     explicit Database(const std::string &path);
     ~Database();
     Database(const Database &) = delete;
@@ -136,71 +38,191 @@ public:
     sqlite3 *handle() const noexcept { return db_; }
 
     void exec(const std::string &sql);
-    Statement prepare(const std::string &sql);
+    Statement prepare(const char *sql);
+    Statement prepare(const std::string &sql) { return prepare(sql.c_str()); }
 
-    // Runs `fn` inside BEGIN IMMEDIATE / COMMIT; rolls back if `fn` throws.
-    void transaction(const std::function<void()> &fn);
+    // Rows changed by the most recent INSERT / UPDATE / DELETE (triggers excluded).
+    int changes() const;
+
+    // Runs `fn` atomically and returns its result. The outermost call uses
+    // BEGIN IMMEDIATE / COMMIT; nested calls use SAVEPOINTs, so API methods can
+    // be composed inside a caller's transaction. Rolls back if `fn` throws.
+    template <typename Fn>
+    auto transaction(Fn &&fn) -> std::invoke_result_t<Fn &> {
+        TransactionScope scope(*this);
+        if constexpr (std::is_void_v<std::invoke_result_t<Fn &>>) {
+            fn();
+            scope.commit();
+        } else {
+            auto result = fn();
+            scope.commit();
+            return result;
+        }
+    }
 
     int schema_version();
     static int latest_schema_version();
 
-    // --- subjects ---------------------------------------------------------
-    void create_subject(const Subject &subject);
-    std::optional<Subject> get_subject(const std::string &id);
-    std::vector<Subject> list_subjects();
-    void update_subject(const Subject &subject);
-    void delete_subject(const std::string &id); // cascades to threads/files/tasks
-
-    // --- threads ----------------------------------------------------------
-    // Generates id and created_at; returns the stored row.
-    Thread create_thread(const std::string &subject_id, const std::string &title,
-                         const std::optional<std::string> &description = std::nullopt);
-    std::optional<Thread> get_thread(const std::string &id);
-    std::vector<Thread> list_threads(const std::string &subject_id);
-    void update_thread(const Thread &thread);
-    void delete_thread(const std::string &id);
-
-    // --- files ------------------------------------------------------------
-    // If file.id is empty a UUID v4 is generated. Returns the stored row.
-    File create_file(File file);
-    std::optional<File> get_file(const std::string &id);
-    std::vector<File> list_files(const std::string &thread_id);
-    std::vector<File> list_files_by_user(const std::string &user_id);
-    void update_file(const File &file);
-    void delete_file(const std::string &id);
-
-    // --- tasks ------------------------------------------------------------
-    Task create_task(const std::string &thread_id, const std::string &title,
-                     const std::optional<std::string> &deadline = std::nullopt);
-    std::optional<Task> get_task(const std::string &id);
-    std::vector<Task> list_tasks(const std::string &thread_id);
-    void update_task(const Task &task);
-    void delete_task(const std::string &id);
-
-    // --- users ------------------------------------------------------------
-    // Password hashing is the caller's responsibility; pass the already
-    // computed hash and salt (or nullopt for password-less accounts).
-    User create_user(const std::string &username,
-                     const std::optional<std::string> &email = std::nullopt,
-                     const std::optional<std::string> &hashed_password = std::nullopt,
-                     const std::optional<std::string> &salt = std::nullopt);
+    // --- users --------------------------------------------------------------
+    // Password hashing (Argon2id, PHC string) is the caller's responsibility.
+    // Without primary_group_id a private group named after the user is created.
+    // The primary group is mirrored into user_groups by a trigger.
+    User create_user(const NewUser &user);
     std::optional<User> get_user(const std::string &id);
     std::optional<User> get_user_by_username(const std::string &username);
     std::vector<User> list_users();
-    void update_user(const User &user);
-    void delete_user(const std::string &id); // files.user_id -> NULL
+    bool update_user(const User &user); // username, email, password_hash, primary_group_id, is_admin
+    bool delete_user(const std::string &id); // fails while the user owns subjects
+
+    // --- groups & membership --------------------------------------------------
+    Group create_group(const std::string &name);
+    std::optional<Group> get_group(const std::string &id);
+    std::optional<Group> get_group_by_name(const std::string &name);
+    std::vector<Group> list_groups();
+    bool rename_group(const std::string &id, const std::string &name);
+    bool delete_group(const std::string &id); // fails while it is a primary group or owns subjects
+
+    void add_user_to_group(const std::string &user_id, const std::string &group_id);
+    // Fails for the user's primary group.
+    bool remove_user_from_group(const std::string &user_id, const std::string &group_id);
+    std::vector<Group> list_groups_of_user(const std::string &user_id);
+    std::vector<User> list_group_members(const std::string &group_id);
+
+    // --- subjects -------------------------------------------------------------
+    Subject create_subject(const NewSubject &subject);
+    std::optional<Subject> get_subject(const std::string &id);
+    std::vector<Subject> list_subjects_owned_by(const std::string &owner_id);
+    // Subjects `user_id` can read (admins: all).
+    std::vector<Subject> list_visible_subjects(const std::string &user_id);
+    bool update_subject(const Subject &subject); // code, name, semester, owner_id, group_id, mode
+    // Cascades to threads, notes, quotes, tasks and materials. Fails while one
+    // of its materials is quoted from another subject's thread.
+    bool delete_subject(const std::string &id);
+
+    // --- permissions ----------------------------------------------------------
+    // owner -> group -> other, first matching class applies; admins bypass.
+    // Threads, notes, quotes and tasks inherit from their subject.
+    bool can_access_subject(const std::string &user_id, const std::string &subject_id,
+                            modules::permission::Access access);
+    bool can_read_subject(const std::string &user_id, const std::string &subject_id) {
+        return can_access_subject(user_id, subject_id, modules::permission::Access::Read);
+    }
+    bool can_write_subject(const std::string &user_id, const std::string &subject_id) {
+        return can_access_subject(user_id, subject_id, modules::permission::Access::Write);
+    }
+
+    // --- threads --------------------------------------------------------------
+    Thread create_thread(const std::string &subject_id, const std::string &title,
+                         const std::optional<std::string> &description = std::nullopt,
+                         const std::optional<std::string> &created_by = std::nullopt);
+    std::optional<Thread> get_thread(const std::string &id);
+    std::vector<Thread> list_threads(const std::string &subject_id);
+    bool update_thread(const Thread &thread); // subject_id, title, description
+    bool delete_thread(const std::string &id);
+
+    // --- blobs ----------------------------------------------------------------
+    // Registers content already written to modules::blob_relative_path(hash).
+    // Idempotent: an existing blob with the same hash is returned unchanged.
+    Blob register_blob(const std::string &hash, std::int64_t size, const std::string &mime_type,
+                       const std::optional<std::int64_t> &page_count = std::nullopt);
+    std::optional<Blob> get_blob(const std::string &hash);
+    // Deletes blob rows no material references; returns their hashes so the
+    // caller can remove the files from disk.
+    std::vector<std::string> delete_unreferenced_blobs();
+
+    // --- materials ------------------------------------------------------------
+    Material add_material(const std::string &subject_id, const std::string &blob_hash,
+                          const std::string &display_name,
+                          const std::optional<std::string> &uploaded_by = std::nullopt);
+    std::optional<Material> get_material(const std::string &id);
+    std::vector<Material> list_materials(const std::string &subject_id,
+                                         bool include_deleted = false);
+    bool rename_material(const std::string &id, const std::string &display_name);
+    bool soft_delete_material(const std::string &id); // hidden, quotes still resolve
+    bool restore_material(const std::string &id);
+    bool delete_material(const std::string &id); // fails while quoted
+
+    // --- quotes ---------------------------------------------------------------
+    Quote create_quote(const NewQuote &quote);
+    std::optional<Quote> get_quote(const std::string &id);
+    std::vector<Quote> list_quotes_by_thread(const std::string &thread_id);
+    std::vector<Quote> list_quotes_by_material(const std::string &material_id);
+    bool update_quote(const Quote &quote); // kind, spec_json, extracted_text, note
+    bool delete_quote(const std::string &id);
+
+    // --- reading progress -----------------------------------------------------
+    ReadingProgress save_reading_progress(const std::string &user_id,
+                                          const std::string &material_id, std::int64_t page,
+                                          double page_offset = 0.0,
+                                          const std::optional<double> &zoom = std::nullopt);
+    std::optional<ReadingProgress> get_reading_progress(const std::string &user_id,
+                                                        const std::string &material_id);
+
+    // --- notes ----------------------------------------------------------------
+    // Creates the note and its first version in one transaction.
+    Note create_note(const std::string &thread_id, const std::string &file_name,
+                     NoteFormat format, const std::string &initial_text = {},
+                     const std::optional<std::string> &created_by = std::nullopt);
+    std::optional<Note> get_note(const std::string &id);
+    std::vector<Note> list_notes(const std::string &thread_id);
+    bool rename_note(const std::string &id, const std::string &file_name);
+    bool delete_note(const std::string &id); // cascades to its versions
+
+    // Saves `text` as a new version on top of `parent_version_id` (the version
+    // the editor started from). Optimistic concurrency: if the note's current
+    // version is no longer the parent, nothing is written and Conflict is
+    // returned with the current version id (3-way merge base = parent).
+    // Saving text identical to the current version returns Unchanged.
+    NoteSaveResult save_note(const std::string &note_id,
+                             const std::optional<std::string> &parent_version_id,
+                             const std::string &text,
+                             const std::optional<std::string> &author_id = std::nullopt,
+                             const std::optional<std::string> &message = std::nullopt);
+
+    // Rollback: saves the content of `version_id` as a new version on top of
+    // the current one (history is kept and the rollback has an author).
+    NoteSaveResult restore_note_version(const std::string &note_id,
+                                        const std::string &version_id,
+                                        const std::optional<std::string> &author_id = std::nullopt,
+                                        const std::optional<std::string> &message = std::nullopt);
+
+    std::optional<NoteVersion> get_note_version(const std::string &version_id);
+    std::vector<NoteVersion> list_note_versions(const std::string &note_id); // newest first
+    std::optional<std::string> read_note_version_content(const std::string &version_id);
+    std::optional<std::string> read_note_content(const std::string &note_id); // current version
+    bool set_note_version_pinned(const std::string &version_id, bool pinned);
+
+    // --- tasks ----------------------------------------------------------------
+    Task create_task(const std::string &thread_id, const std::string &title,
+                     const std::optional<std::string> &deadline = std::nullopt,
+                     const std::optional<std::string> &created_by = std::nullopt);
+    std::optional<Task> get_task(const std::string &id);
+    std::vector<Task> list_tasks(const std::string &thread_id); // open first, by deadline
+    bool update_task(const Task &task); // thread_id, title, deadline
+    bool set_task_completed(const std::string &id, bool completed);
+    bool delete_task(const std::string &id);
 
 private:
+    class TransactionScope {
+    public:
+        explicit TransactionScope(Database &db);
+        ~TransactionScope();
+        TransactionScope(const TransactionScope &) = delete;
+        TransactionScope &operator=(const TransactionScope &) = delete;
+        void commit();
+
+    private:
+        Database &db_;
+        std::string savepoint_; // empty for the outermost BEGIN IMMEDIATE
+        bool done_ = false;
+    };
+
     void apply_pragmas();
     void run_migrations();
+    std::optional<std::string> read_version_content(Statement &stmt);
 
     sqlite3 *db_ = nullptr;
+    int savepoint_depth_ = 0;
 };
-
-// Generates a random RFC 4122 version 4 UUID string.
-std::string generate_uuid_v4();
-
-// Current UTC time as ISO 8601, e.g. "2026-11-24T04:29:50Z".
-std::string now_iso8601();
 
 } // namespace noteman::db
