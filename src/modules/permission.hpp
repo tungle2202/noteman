@@ -30,9 +30,11 @@ inline constexpr int kMinMode = 0;
 inline constexpr int kMaxMode = 63;
 
 // Must match the DEFAULT of subjects.mode in the schema.
-inline constexpr int kDefaultMode = 56; // rwr---
+inline constexpr int kDefaultMode = 48; // rw----
 
-constexpr bool is_valid(int mode) { return mode >= kMinMode && mode <= kMaxMode; }
+constexpr bool is_valid(int mode) {
+  return mode >= kMinMode && mode <= kMaxMode;
+}
 
 // Bit that grants `access` to `cls`.
 int bit(Class cls, Access access);
